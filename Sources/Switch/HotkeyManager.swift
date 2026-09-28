@@ -56,6 +56,7 @@ final class HotkeyManager {
     private var lastShift = false
     private var shiftTapPending = false
     private var suspended = false
+    private var scrollSuppressed = false
     private var stopRequested = false
 
     private var tapThread: Thread?
@@ -200,7 +201,9 @@ final class HotkeyManager {
     }
 
     private func installTap() {
-        let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
+        let mask = (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.flagsChanged.rawValue)
+            | (1 << CGEventType.scrollWheel.rawValue)
         let info = Unmanaged.passUnretained(self).toOpaque()
         let cb: CGEventTapCallBack = { _, type, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
@@ -240,6 +243,10 @@ final class HotkeyManager {
         let isSuspended = suspended
         stateLock.unlock()
         if isSuspended { return Unmanaged.passUnretained(event) }
+        stateLock.lock()
+        let suppressScroll = scrollSuppressed
+        stateLock.unlock()
+        if type == .scrollWheel && suppressScroll { return nil }
 
         let flags = event.flags
         let cmd = flags.contains(.maskCommand)
@@ -447,6 +454,12 @@ final class HotkeyManager {
         stateLock.lock()
         suspended = value
         if value { clearArmedLocked() }
+        stateLock.unlock()
+    }
+
+    func setScrollSuppressed(_ value: Bool) {
+        stateLock.lock()
+        scrollSuppressed = value
         stateLock.unlock()
     }
 

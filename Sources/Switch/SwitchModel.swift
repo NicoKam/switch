@@ -17,6 +17,7 @@ final class SwitchModel: ObservableObject {
     private var armDisplayFrame: CGRect?
     private var armFrontWindowID: CGWindowID?
     private var armReverse = false
+    private var gestureInitialDirection: HotkeyManager.Direction?
 
     /// Set by AppDelegate so the view can request a commit + window dismiss from a mouse click.
     var commitAndDismiss: (() -> Void)?
@@ -63,7 +64,8 @@ final class SwitchModel: ObservableObject {
         return patIdx == pat.count ? score : nil
     }
 
-    func arm(_ style: HotkeyManager.ArmStyle) {
+    func arm(_ style: HotkeyManager.ArmStyle, initialDirection: HotkeyManager.Direction? = nil) {
+        gestureInitialDirection = initialDirection
         armGeneration &+= 1
         let gen = armGeneration
         self.mode = style.mode
@@ -128,9 +130,18 @@ final class SwitchModel: ObservableObject {
                 // onboarding); the picker panel can't become key, so keyWindow != nil rules out the stale
                 // "still frontmost after closing a window" state behind #90.
                 let n = filteredWindows.count
-                selected = (stickySession || selfFront) ? 0
-                    : armReverse ? max(n - 1, 0)
-                    : (frontListed && n > 1 ? 1 : 0)
+                if let direction = gestureInitialDirection, n > 0 {
+                    selected = navigationDestination(
+                        from: 0,
+                        direction: direction,
+                        count: n,
+                        wrapVertical: false
+                    )
+                } else {
+                    selected = (stickySession || selfFront) ? 0
+                        : armReverse ? max(n - 1, 0)
+                        : (frontListed && n > 1 ? 1 : 0)
+                }
             }
         } else if changed {
             let list = filteredWindows
@@ -347,26 +358,51 @@ final class SwitchModel: ObservableObject {
         }
     }
 
-    func advance(reverse: Bool) {
+    @discardableResult
+    func advance(reverse: Bool) -> Bool {
         let list = filteredWindows
-        guard !list.isEmpty else { return }
+        guard list.count > 1 else { return false }
+        let previous = selected
         let n = list.count
         selected = reverse ? (selected - 1 + n) % n : (selected + 1) % n
+        return selected != previous
     }
 
-    func navigate(direction: HotkeyManager.Direction) {
+    @discardableResult
+    func navigate(direction: HotkeyManager.Direction, wrapVertical: Bool = true) -> Bool {
         let list = filteredWindows
-        guard !list.isEmpty else { return }
-        let n = list.count
+        guard list.count > 1 else { return false }
+        let previous = selected
+        selected = navigationDestination(
+            from: selected,
+            direction: direction,
+            count: list.count,
+            wrapVertical: wrapVertical
+        )
+        return selected != previous
+    }
+
+    private func navigationDestination(
+        from index: Int,
+        direction: HotkeyManager.Direction,
+        count: Int,
+        wrapVertical: Bool
+    ) -> Int {
         let cols = (SwitchPreferences.shared.verticalList || mode == .spaces) ? 1 : SwitchPreferences.shared.gridColumns
-        let delta: Int
         switch direction {
-        case .left:  delta = -1
-        case .right: delta = 1
-        case .up:    delta = -cols
-        case .down:  delta = cols
+        case .left:
+            return (index - 1 + count) % count
+        case .right:
+            return (index + 1) % count
+        case .up:
+            if !wrapVertical && index < cols { return index }
+            return ((index - cols) % count + count) % count
+        case .down:
+            let candidate = index + cols
+            if candidate < count { return candidate }
+            if !wrapVertical { return index }
+            return candidate % count
         }
-        selected = ((selected + delta) % n + n) % n
     }
 
     func pickIndex(_ index: Int) {

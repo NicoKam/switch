@@ -128,6 +128,10 @@ final class SwitchPreferences: ObservableObject {
         didSet { UserDefaults.standard.set(disableMouse, forKey: SwitchPreferences.disableMouseKey) }
     }
 
+    @Published var threeFingerSwitching: Bool {
+        didSet { UserDefaults.standard.set(threeFingerSwitching, forKey: SwitchPreferences.threeFingerSwitchingKey) }
+    }
+
     @Published var disableAnimations: Bool {
         didSet { UserDefaults.standard.set(disableAnimations, forKey: disableAnimationsKey) }
     }
@@ -258,6 +262,7 @@ final class SwitchPreferences: ObservableObject {
     nonisolated static let crossSpaceKey = "switch.showCrossSpace"
     nonisolated static let stickyModeKey = "switch.stickyMode"
     nonisolated static let disableMouseKey = "switch.disableMouse"
+    nonisolated static let threeFingerSwitchingKey = "switch.threeFingerSwitching"
     private let disableAnimationsKey = "switch.disableAnimations"
     nonisolated static let verticalListKey = "switch.verticalList"
     nonisolated static let blacklistKey = "switch.blacklist"
@@ -297,6 +302,7 @@ final class SwitchPreferences: ObservableObject {
         showCrossSpace = (UserDefaults.standard.object(forKey: SwitchPreferences.crossSpaceKey) as? Bool) ?? true
         stickyMode = UserDefaults.standard.bool(forKey: SwitchPreferences.stickyModeKey)
         disableMouse = UserDefaults.standard.bool(forKey: SwitchPreferences.disableMouseKey)
+        threeFingerSwitching = UserDefaults.standard.bool(forKey: SwitchPreferences.threeFingerSwitchingKey)
         disableAnimations = UserDefaults.standard.bool(forKey: disableAnimationsKey)
         verticalList = UserDefaults.standard.bool(forKey: SwitchPreferences.verticalListKey)
         blacklist = Set(UserDefaults.standard.stringArray(forKey: SwitchPreferences.blacklistKey) ?? [])
