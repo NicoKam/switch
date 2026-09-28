@@ -74,6 +74,9 @@ final class TrackpadGestureManager {
     private var initialPosition = MTPoint(x: 0, y: 0)
     private var active = false
     private var eligible = false
+    private var cancelledUntilRelease = false
+    private var scrollSuppressionRequested = false
+    private var callbackGeneration: UInt = 0
 
     deinit {
         stop()
@@ -102,13 +105,7 @@ final class TrackpadGestureManager {
         var discovered: [UnsafeMutableRawPointer] = []
         for index in 0..<CFArrayGetCount(list) {
             guard let device = CFArrayGetValueAtIndex(list, index) else { continue }
-            let pointer = UnsafeMutableRawPointer(mutating: device)
-            Self.registryLock.lock()
-            Self.owners[pointer] = self
-            Self.registryLock.unlock()
-            register(pointer, Self.callback)
-            startDevice(pointer, 0)
-            discovered.append(pointer)
+            discovered.append(UnsafeMutableRawPointer(mutating: device))
         }
 
         guard !discovered.isEmpty else {
@@ -120,8 +117,27 @@ final class TrackpadGestureManager {
         devices = discovered
         unregisterCallback = unregister
         self.stopDevice = stopDevice
+        callbackGeneration &+= 1
         stateLock.unlock()
+        for device in discovered {
+            Self.registryLock.lock()
+            Self.owners[device] = self
+            Self.registryLock.unlock()
+            register(device, Self.callback)
+            startDevice(device, 0)
+        }
         return true
+    }
+
+    /// Discard queued input and wait for the current contacts to lift before recognizing another gesture.
+    func cancelCurrentGesture() {
+        stateLock.lock()
+        callbackGeneration &+= 1
+        active = false
+        eligible = false
+        cancelledUntilRelease = trackingDevice != nil
+        setScrollSuppressionLocked(false)
+        stateLock.unlock()
     }
 
     func stop() {
@@ -135,7 +151,11 @@ final class TrackpadGestureManager {
         devices = []
         unregisterCallback = nil
         self.stopDevice = nil
+        callbackGeneration &+= 1
         resetLocked()
+        if shouldCancel {
+            deliver(generation: callbackGeneration) { $0.onFinish?(false) }
+        }
         stateLock.unlock()
 
         for device in currentDevices {
@@ -146,21 +166,22 @@ final class TrackpadGestureManager {
             Self.registryLock.unlock()
         }
         if let handle { dlclose(handle) }
-        if !currentDevices.isEmpty { emitTrackingChanged(false) }
-        if shouldCancel {
-            DispatchQueue.main.async { [weak self] in self?.onFinish?(false) }
-        }
     }
 
     private func handle(device: UnsafeMutableRawPointer, touches: UnsafeMutablePointer<MTTouch>?, count: Int) {
         stateLock.lock()
+        guard framework != nil else {
+            stateLock.unlock()
+            return
+        }
         if count == 0 {
             let shouldCommit = active
             let wasTracking = trackingDevice == device
             if wasTracking { resetLocked() }
+            if shouldCommit && wasTracking {
+                deliver(generation: callbackGeneration) { $0.onFinish?(true) }
+            }
             stateLock.unlock()
-            if wasTracking { emitTrackingChanged(false) }
-            if shouldCommit && wasTracking { emitFinish(commit: true) }
             return
         }
 
@@ -168,8 +189,15 @@ final class TrackpadGestureManager {
             stateLock.unlock()
             return
         }
+        guard !cancelledUntilRelease else {
+            stateLock.unlock()
+            return
+        }
         guard count >= 3, let touches else {
-            if trackingDevice == device { needsTouchRebind = true }
+            if trackingDevice == device {
+                needsTouchRebind = true
+                setScrollSuppressionLocked(false)
+            }
             stateLock.unlock()
             return
         }
@@ -186,6 +214,7 @@ final class TrackpadGestureManager {
             trackedTouches = allTouches.filter { trackedTouchIDs.contains($0.identifier) }
             guard trackedTouches.count == 3 else {
                 needsTouchRebind = true
+                setScrollSuppressionLocked(false)
                 stateLock.unlock()
                 return
             }
@@ -196,6 +225,7 @@ final class TrackpadGestureManager {
         )
         if rebinding {
             initialPosition = position
+            setScrollSuppressionLocked(active)
             stateLock.unlock()
             return
         }
@@ -204,7 +234,6 @@ final class TrackpadGestureManager {
             active = false
             eligible = true
             stateLock.unlock()
-            emitTrackingChanged(true)
             return
         }
 
@@ -235,29 +264,44 @@ final class TrackpadGestureManager {
         let isBeginning = !active
         active = true
         initialPosition = position
+        if isBeginning {
+            scrollSuppressionRequested = true
+            deliver(generation: callbackGeneration) {
+                $0.onBegin?(direction)
+                $0.onTrackingChanged?(true)
+            }
+        } else {
+            deliver(generation: callbackGeneration) { $0.onStep?(direction) }
+        }
         stateLock.unlock()
+    }
 
+    private func setScrollSuppressionLocked(_ suppressed: Bool) {
+        guard scrollSuppressionRequested != suppressed else { return }
+        scrollSuppressionRequested = suppressed
+        deliver(generation: callbackGeneration) { $0.onTrackingChanged?(suppressed) }
+    }
+
+    private func deliver(generation: UInt, _ action: @escaping (TrackpadGestureManager) -> Void) {
         DispatchQueue.main.async { [weak self] in
-            if isBeginning { self?.onBegin?(direction) }
-            else { self?.onStep?(direction) }
+            guard let self else { return }
+            self.stateLock.lock()
+            let current = self.callbackGeneration
+            self.stateLock.unlock()
+            guard current == generation else { return }
+            action(self)
         }
     }
 
-    private func emitTrackingChanged(_ tracking: Bool) {
-        DispatchQueue.main.async { [weak self] in self?.onTrackingChanged?(tracking) }
-    }
-
-    private func emitFinish(commit: Bool) {
-        DispatchQueue.main.async { [weak self] in self?.onFinish?(commit) }
-    }
-
     private func resetLocked() {
+        setScrollSuppressionLocked(false)
         trackingDevice = nil
         trackedTouchIDs = []
         needsTouchRebind = false
         initialPosition = MTPoint(x: 0, y: 0)
         active = false
         eligible = false
+        cancelledUntilRelease = false
     }
 
     private func symbol<T>(_ name: String, in handle: UnsafeMutableRawPointer) -> T? {
