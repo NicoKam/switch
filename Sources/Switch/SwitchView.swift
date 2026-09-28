@@ -526,7 +526,7 @@ private struct SelectionChrome: ViewModifier {
                 ZStack {
                     if selected {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .stroke(accent.opacity(0.7), lineWidth: 1)
+                            .strokeBorder(accent.opacity(0.95), lineWidth: 2)
                             .matchedGeometryEffect(id: "selectionRing", in: namespace)
                     }
                 }

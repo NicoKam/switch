@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #endif
     private var model: SwitchModel?
     private var hotkey: HotkeyManager?
+    private var trackpadGesture: TrackpadGestureManager?
     private var window: SwitcherWindow?
     private var statusBar: StatusBarController?
     private var onboardingModel: OnboardingModel?
@@ -35,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var focusTracker: FocusTracker?
     private var hotkeyStarted = false
     private var focusTrackerStarted = false
+    private var trackpadGestureSessionActive = false
     #if DEBUG
     private let debugHarness = DebugFocusHarness()
     #endif
@@ -54,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let model = SwitchModel()
         let window = SwitcherWindow(model: model)
         let hotkey = HotkeyManager()
+        let trackpadGesture = TrackpadGestureManager()
 
         // Most tap callbacks force a pending picker onto screen before acting.
         let present: () -> Void = { [weak self] in self?.presentNowIfPending(window: window) }
@@ -104,9 +107,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.onOpenSettings = {
             MainActor.assumeIsolated { SettingsWindow.shared.show() }
         }
+        let performGestureFeedback: () -> Void = {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+        trackpadGesture.onTrackingChanged = { [weak hotkey] tracking in
+            hotkey?.setScrollSuppressed(tracking)
+        }
+        trackpadGesture.onBegin = { [weak self, weak model, weak window, weak hotkey] direction in
+            guard let self, let hotkey, !hotkey.isArmed, model?.visible != true else { return }
+            self.trackpadGestureSessionActive = true
+            model?.arm(.init(mode: .allWindows), initialDirection: direction)
+            window?.present()
+            if model?.selected != 0 { performGestureFeedback() }
+        }
+        trackpadGesture.onStep = { [weak self, weak model] direction in
+            guard self?.trackpadGestureSessionActive == true else { return }
+            if model?.navigate(direction: direction, wrapVertical: false) == true { performGestureFeedback() }
+        }
+        trackpadGesture.onFinish = { [weak self, weak model, weak window] commit in
+            guard let self, self.trackpadGestureSessionActive else { return }
+            self.trackpadGestureSessionActive = false
+            if commit { model?.commit() } else { model?.cancel() }
+            window?.dismiss()
+        }
 
         SwitchPreferences.shared.$appearance
             .sink { NSApp.appearance = $0.nsAppearance }
+            .store(in: &cancellables)
+        model.$windows
+            .dropFirst()
+            .sink { [weak window, weak model] _ in
+                guard model?.visible == true else { return }
+                window?.applyContentSize(for: SwitcherWindow.pickerScreen())
+            }
             .store(in: &cancellables)
         SwitchPreferences.shared.$verticalList
             .dropFirst()
@@ -138,9 +171,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.statusBar?.setHidden(hidden)
             }
             .store(in: &cancellables)
+        SwitchPreferences.shared.$threeFingerSwitching
+            .sink { [weak trackpadGesture] enabled in
+                if enabled { _ = trackpadGesture?.start() } else { trackpadGesture?.stop() }
+            }
+            .store(in: &cancellables)
 
         self.model = model
         self.hotkey = hotkey
+        self.trackpadGesture = trackpadGesture
         self.window = window
         self.statusBar = StatusBarController()
         self.onboardingModel = OnboardingModel()
@@ -382,6 +421,13 @@ final class SwitcherWindow: NSPanel {
         )
         model.panelSize = CGSize(width: fitted.width, height: fitted.height)
         setContentSize(fitted)
+        if let screen {
+            let visible = screen.visibleFrame
+            setFrameOrigin(NSPoint(
+                x: visible.midX - frame.width / 2,
+                y: visible.midY - frame.height / 2
+            ))
+        }
     }
 
     func present() {
@@ -391,13 +437,6 @@ final class SwitcherWindow: NSPanel {
 
         let screen = Self.pickerScreen()
         applyContentSize(for: screen)
-        if let screen {
-            let visible = screen.visibleFrame
-            setFrameOrigin(NSPoint(
-                x: visible.midX - frame.width / 2,
-                y: visible.midY - frame.height / 2
-            ))
-        }
         orderFrontRegardless()
     }
 
@@ -430,7 +469,7 @@ private enum SwitcherPanelSize {
         // Every mode sizes to the window count; a fixed panel leaves rows of empty backdrop (#134).
         let size = (mode == .spaces || isList)
             ? listSize(defaults: defaults, count: count, scale: scale, screen: screen)
-            : gridSize(defaults: defaults, count: count, thumb: thumb, scale: scale)
+            : gridSize(defaults: defaults, count: count, thumb: thumb, scale: scale, screen: screen)
         return fit(size, on: screen)
     }
 
@@ -450,25 +489,34 @@ private enum SwitcherPanelSize {
         return NSSize(width: 520 * scale, height: max(260, height))
     }
 
-    private static func gridSize(defaults: UserDefaults, count: Int, thumb: CGFloat, scale: CGFloat) -> NSSize {
+    private static func gridSize(
+        defaults: UserDefaults,
+        count: Int,
+        thumb: CGFloat,
+        scale: CGFloat,
+        screen: NSScreen?
+    ) -> NSSize {
         let showHints = (defaults.object(forKey: SwitchPreferences.showHintStripKey) as? Bool) ?? true
         let showThumbs = (defaults.object(forKey: SwitchPreferences.showThumbnailsKey) as? Bool) ?? true
         let tileThumb: CGFloat = showThumbs ? thumb : SwitchPreferences.compactThumbnailHeight
         let configuredColumns = (defaults.object(forKey: SwitchPreferences.gridColumnsKey) as? Int) ?? SwitchPreferences.defaultGridColumns
-        let columns = min(max(configuredColumns, 1), max(count, 3))
-        let baseWidth: CGFloat = 880 * scale
+        let columns = min(max(configuredColumns, 1), count)
         let horizontalPadding: CGFloat = 44
         let columnSpacing: CGFloat = 14
-        let usable = baseWidth - horizontalPadding - CGFloat(max(configuredColumns - 1, 0)) * columnSpacing
-        let columnWidth = usable / CGFloat(configuredColumns)
-        let width = horizontalPadding + CGFloat(columns) * columnWidth + CGFloat(max(columns - 1, 0)) * columnSpacing
+        let preferredColumnWidth = max(150, 195 * scale)
+        let naturalWidth = horizontalPadding
+            + CGFloat(columns) * preferredColumnWidth
+            + CGFloat(max(columns - 1, 0)) * columnSpacing
+        let availableWidth = screen.map { $0.visibleFrame.width * 0.92 } ?? naturalWidth
+        let width = min(naturalWidth, availableWidth)
 
         let rows = Int(ceil(Double(count) / Double(columns)))
         let tileHeight = tileThumb + 52
         let rowsHeight = CGFloat(rows) * tileHeight + CGFloat(max(rows - 1, 0)) * 14
         let hintHeight: CGFloat = showHints ? 38 : 0
-        let height = 26 + 16 + rowsHeight + hintHeight
-        return NSSize(width: max(560, width), height: min(560 * scale, max(320, height)))
+        let naturalHeight = 26 + 16 + rowsHeight + hintHeight
+        let availableHeight = screen.map { $0.visibleFrame.height * 0.92 } ?? naturalHeight
+        return NSSize(width: max(min(560, availableWidth), width), height: min(naturalHeight, availableHeight))
     }
 
     private static func fit(_ size: NSSize, on screen: NSScreen?) -> NSSize {

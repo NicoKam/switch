@@ -201,6 +201,10 @@ struct SettingsView: View {
                                   "Ignore mouse hover and click while the picker is open.",
                                   $prefs.disableMouse)
                         Divider().opacity(0.4)
+                        toggleRow("Three-finger swipe",
+                                  "Swipe in any direction to choose a window, then lift all three fingers to switch.",
+                                  $prefs.threeFingerSwitching)
+                        Divider().opacity(0.4)
                         toggleRow("Reduce motion",
                                   "Turn off picker fade, selection movement, and other switcher animations.",
                                   $prefs.disableAnimations)
