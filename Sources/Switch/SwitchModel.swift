@@ -18,7 +18,7 @@ final class SwitchModel: ObservableObject {
     private var armDisplayFrame: CGRect?
     private var armFrontWindowID: CGWindowID?
     private var armReverse = false
-    private var gestureInitialDirection: HotkeyManager.Direction?
+    private var pendingGestureDirections: [HotkeyManager.Direction]?
 
     /// Set by AppDelegate so the view can request a commit + window dismiss from a mouse click.
     var commitAndDismiss: (() -> Void)?
@@ -66,7 +66,7 @@ final class SwitchModel: ObservableObject {
     }
 
     func arm(_ style: HotkeyManager.ArmStyle, initialDirection: HotkeyManager.Direction? = nil) {
-        gestureInitialDirection = initialDirection
+        pendingGestureDirections = initialDirection.map { [$0] }
         armGeneration &+= 1
         let gen = armGeneration
         self.mode = style.mode
@@ -137,14 +137,20 @@ final class SwitchModel: ObservableObject {
                 // onboarding); the picker panel can't become key, so keyWindow != nil rules out the stale
                 // "still frontmost after closing a window" state behind #90.
                 let n = filteredWindows.count
-                if let direction = gestureInitialDirection, n > 0 {
-                    selected = navigationDestination(
-                        from: 0,
-                        direction: direction,
-                        count: n,
-                        wrapHorizontal: false,
-                        wrapVertical: false
-                    )
+                if let directions = pendingGestureDirections {
+                    selected = 0
+                    if n > 0 {
+                        for direction in directions {
+                            selected = navigationDestination(
+                                from: selected,
+                                direction: direction,
+                                count: n,
+                                wrapHorizontal: false,
+                                wrapVertical: false
+                            )
+                        }
+                        pendingGestureDirections = nil
+                    }
                 } else {
                     selected = (stickySession || selfFront) ? 0
                         : armReverse ? max(n - 1, 0)
@@ -382,6 +388,10 @@ final class SwitchModel: ObservableObject {
         wrapHorizontal: Bool = true,
         wrapVertical: Bool = true
     ) -> Bool {
+        if pendingGestureDirections != nil {
+            pendingGestureDirections?.append(direction)
+            return false
+        }
         let list = filteredWindows
         guard list.count > 1 else { return false }
         let previous = selected
@@ -414,12 +424,10 @@ final class SwitchModel: ObservableObject {
             if !wrapVertical && index < cols { return index }
             return ((index - cols) % count + count) % count
         case .down:
-            let currentRow = index / cols
-            let nextRowStart = (currentRow + 1) * cols
-            if nextRowStart < count {
-                return min(index + cols, count - 1)
+            if !wrapVertical {
+                let destination = index + cols
+                return destination < count ? destination : index
             }
-            if !wrapVertical { return index }
             return (index + cols) % count
         }
     }
@@ -509,6 +517,7 @@ final class SwitchModel: ObservableObject {
     }
 
     private func teardown() {
+        pendingGestureDirections = nil
         visible = false
         windows = []
         thumbnails = [:]

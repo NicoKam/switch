@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyStarted = false
     private var focusTrackerStarted = false
     private var trackpadGestureSessionActive = false
+    private var hotkeyRecording = false
     #if DEBUG
     private let debugHarness = DebugFocusHarness()
     #endif
@@ -62,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let present: () -> Void = { [weak self] in self?.presentNowIfPending(window: window) }
 
         hotkey.onArm = { [weak self] style in
+            self?.invalidateTrackpadGestureSession()
             model.arm(style)
             self?.schedulePresent(window: window)
         }
@@ -71,22 +73,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Tap-originated commits already cleared armed on the tap thread; clearing again here races a fresh arm.
         hotkey.onCommit = { [weak self, weak model, weak window] quick in
+            self?.invalidateTrackpadGestureSession()
             self?.cancelPendingPresent()
             model?.commit(stickyQuickTap: quick)
             window?.dismiss()
         }
         model.commitAndDismiss = { [weak self, weak model, weak window] in
+            self?.invalidateTrackpadGestureSession()
             self?.cancelPendingPresent()
             self?.hotkey?.clearArmed()
             model?.commit()
             window?.dismiss()
         }
         hotkey.onCancel = { [weak self, weak model, weak window] in
+            self?.invalidateTrackpadGestureSession()
             self?.cancelPendingPresent()
             model?.cancel()
             window?.dismiss()
         }
         let cancelAndDismiss: () -> Void = { [weak self, weak model, weak window] in
+            self?.invalidateTrackpadGestureSession()
             self?.cancelPendingPresent()
             self?.hotkey?.clearArmed()
             model?.cancel()
@@ -107,72 +113,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.onOpenSettings = {
             MainActor.assumeIsolated { SettingsWindow.shared.show() }
         }
-        let performGestureFeedback: () -> Void = {
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        trackpadGesture.onTrackingChanged = { [weak self, weak hotkey] tracking in
+            hotkey?.setScrollSuppressed(tracking && self?.trackpadGestureSessionActive == true
+                && self?.trackpadGestureAvailable == true)
         }
-        trackpadGesture.onTrackingChanged = { [weak hotkey] tracking in
-            hotkey?.setScrollSuppressed(tracking)
+        trackpadGesture.onBegin = { [weak self] direction in
+            self?.beginTrackpadGesture(direction: direction)
         }
-        trackpadGesture.onBegin = { [weak self, weak model, weak window, weak hotkey] direction in
-            guard let self, let hotkey, !hotkey.isArmed, model?.visible != true else { return }
-            self.trackpadGestureSessionActive = true
-            model?.arm(.init(mode: .allWindows), initialDirection: direction)
-            window?.present()
-            if model?.selected != 0 { performGestureFeedback() }
+        trackpadGesture.onStep = { [weak self] direction in
+            self?.stepTrackpadGesture(direction: direction)
         }
-        trackpadGesture.onStep = { [weak self, weak model] direction in
-            guard self?.trackpadGestureSessionActive == true else { return }
-            if model?.navigate(direction: direction, wrapHorizontal: false, wrapVertical: false) == true {
-                performGestureFeedback()
-            }
-        }
-        trackpadGesture.onFinish = { [weak self, weak model, weak window] commit in
-            guard let self, self.trackpadGestureSessionActive else { return }
-            self.trackpadGestureSessionActive = false
-            if commit { model?.commit() } else { model?.cancel() }
-            window?.dismiss()
+        trackpadGesture.onFinish = { [weak self] commit in
+            self?.finishTrackpadGesture(commit: commit)
         }
 
         SwitchPreferences.shared.$appearance
             .sink { NSApp.appearance = $0.nsAppearance }
             .store(in: &cancellables)
-        model.$windows
-            .dropFirst()
-            .sink { [weak window, weak model] _ in
-                guard model?.visible == true else { return }
-                window?.applyContentSize(for: SwitcherWindow.pickerScreen())
-            }
-            .store(in: &cancellables)
-        SwitchPreferences.shared.$verticalList
-            .dropFirst()
-            .sink { [weak window] _ in window?.applyContentSize() }
-            .store(in: &cancellables)
-        SwitchPreferences.shared.$automaticGridColumns
-            .dropFirst()
-            .sink { [weak window] _ in window?.applyContentSize(for: SwitcherWindow.pickerScreen()) }
-            .store(in: &cancellables)
-        SwitchPreferences.shared.$gridColumns
-            .dropFirst()
-            .sink { [weak window] _ in window?.applyContentSize(for: SwitcherWindow.pickerScreen()) }
-            .store(in: &cancellables)
-        SwitchPreferences.shared.$thumbnailHeight
-            .dropFirst()
-            .sink { [weak window] _ in window?.applyContentSize(for: SwitcherWindow.pickerScreen()) }
-            .store(in: &cancellables)
-        SwitchPreferences.shared.$maxListRows
-            .dropFirst()
-            .sink { [weak window] _ in window?.applyContentSize() }
-            .store(in: &cancellables)
+        observePickerLayout(model: model, window: window)
         SwitchPreferences.shared.$showThumbnails
             .dropFirst()
+            .receive(on: DispatchQueue.main)
             .sink { [weak self, weak window] enabled in
-                window?.applyContentSize()
+                window?.applyContentSize(for: SwitcherWindow.pickerScreen())
                 if enabled && CGPreflightScreenCaptureAccess() == false {
                     self?.showOnboarding()
                 } else if self?.requiredPermissionsGranted == true {
                     self?.startHotkeyIfNeeded()
                     self?.startFocusTrackerIfNeeded()
                 }
+                self?.updateTrackpadGestureAvailability()
             }
             .store(in: &cancellables)
         SwitchPreferences.shared.$hideMenuBarIcon
@@ -182,8 +152,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
         SwitchPreferences.shared.$threeFingerSwitching
-            .sink { [weak trackpadGesture] enabled in
-                if enabled { _ = trackpadGesture?.start() } else { trackpadGesture?.stop() }
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateTrackpadGestureAvailability()
             }
             .store(in: &cancellables)
 
@@ -215,13 +187,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startHotkeyIfNeeded()
             startFocusTrackerIfNeeded()
         }
+        updateTrackpadGestureAvailability()
 
         // Background poll: as soon as both are granted, install the tap.
         permsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            if self.requiredPermissionsGranted {
-                self.startHotkeyIfNeeded()
-                self.startFocusTrackerIfNeeded()
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.requiredPermissionsGranted {
+                    self.startHotkeyIfNeeded()
+                    self.startFocusTrackerIfNeeded()
+                }
+                self.updateTrackpadGestureAvailability()
             }
         }
 
@@ -244,14 +220,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: .switchRecorderBegan, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                self?.hotkeyRecording = true
                 if self?.model?.visible == true { cancelAndDismiss() }
                 self?.hotkey?.setSuspended(true)
+                self?.updateTrackpadGestureAvailability()
             }
         }
         NotificationCenter.default.addObserver(
             forName: .switchRecorderEnded, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.hotkey?.setSuspended(false)
+            MainActor.assumeIsolated {
+                self?.hotkeyRecording = false
+                self?.hotkey?.setSuspended(false)
+                self?.updateTrackpadGestureAvailability()
+            }
         }
 
         // A click in another app while the picker floats (sticky mode) should
@@ -282,6 +264,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let thumbnailsEnabled = (UserDefaults.standard.object(forKey: SwitchPreferences.showThumbnailsKey) as? Bool) ?? true
         let screenCaptureOK = !thumbnailsEnabled || CGPreflightScreenCaptureAccess()
         return AXIsProcessTrusted() && screenCaptureOK
+    }
+
+    @MainActor private func observePickerLayout(model: SwitchModel, window: SwitcherWindow) {
+        // @Published emits before storage (and preference didSet) updates. Resize on the next main-queue turn.
+        let changes = [
+            model.$windows.map { _ in () }.eraseToAnyPublisher(),
+            SwitchPreferences.shared.$verticalList.map { _ in () }.eraseToAnyPublisher(),
+            SwitchPreferences.shared.$automaticGridColumns.map { _ in () }.eraseToAnyPublisher(),
+            SwitchPreferences.shared.$gridColumns.map { _ in () }.eraseToAnyPublisher(),
+            SwitchPreferences.shared.$thumbnailHeight.map { _ in () }.eraseToAnyPublisher(),
+            SwitchPreferences.shared.$maxListRows.map { _ in () }.eraseToAnyPublisher()
+        ]
+        Publishers.MergeMany(changes.map { $0.dropFirst().eraseToAnyPublisher() })
+            .receive(on: DispatchQueue.main)
+            .sink { [weak window, weak model] _ in
+                guard model?.visible == true else { return }
+                window?.applyContentSize(for: SwitcherWindow.pickerScreen())
+            }
+            .store(in: &cancellables)
+    }
+
+    @MainActor private func invalidateTrackpadGestureSession() {
+        trackpadGestureSessionActive = false
+        hotkey?.setScrollSuppressed(false)
+        trackpadGesture?.cancelCurrentGesture()
+    }
+
+    @MainActor private var trackpadGestureAvailable: Bool {
+        SwitchPreferences.shared.threeFingerSwitching && !hotkeyRecording && requiredPermissionsGranted
+    }
+
+    @MainActor private func beginTrackpadGesture(direction: HotkeyManager.Direction) {
+        guard trackpadGestureAvailable, let model, let window, let hotkey,
+              !hotkey.isArmed, !model.visible else { return }
+        trackpadGestureSessionActive = true
+        model.arm(.init(mode: .allWindows), initialDirection: direction)
+        window.present()
+        if model.selected != 0 { performGestureFeedback() }
+    }
+
+    @MainActor private func stepTrackpadGesture(direction: HotkeyManager.Direction) {
+        guard trackpadGestureSessionActive else { return }
+        guard trackpadGestureAvailable else {
+            updateTrackpadGestureAvailability()
+            return
+        }
+        guard let model, model.visible, hotkey?.isArmed != true else {
+            invalidateTrackpadGestureSession()
+            return
+        }
+        if model.navigate(direction: direction, wrapHorizontal: false, wrapVertical: false) {
+            performGestureFeedback()
+        }
+    }
+
+    @MainActor private func finishTrackpadGesture(commit: Bool) {
+        guard trackpadGestureSessionActive else { return }
+        guard trackpadGestureAvailable else {
+            updateTrackpadGestureAvailability()
+            return
+        }
+        guard let model, model.visible, hotkey?.isArmed != true else {
+            invalidateTrackpadGestureSession()
+            return
+        }
+        trackpadGestureSessionActive = false
+        hotkey?.setScrollSuppressed(false)
+        if commit { model.commit() } else { model.cancel() }
+        window?.dismiss()
+    }
+
+    @MainActor private func performGestureFeedback() {
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+    }
+
+    @MainActor private func updateTrackpadGestureAvailability() {
+        guard trackpadGestureAvailable else {
+            if trackpadGestureSessionActive {
+                model?.cancel()
+                window?.dismiss()
+            }
+            invalidateTrackpadGestureSession()
+            trackpadGesture?.stop()
+            return
+        }
+        // The permissions poll also retries discovery if no trackpad was connected at startup.
+        trackpadGesture?.start()
     }
 
     private func schedulePresent(window: SwitcherWindow) {

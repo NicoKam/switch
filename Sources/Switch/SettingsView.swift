@@ -202,7 +202,7 @@ struct SettingsView: View {
                                   $prefs.disableMouse)
                         Divider().opacity(0.4)
                         toggleRow("Three-finger swipe",
-                                  "Swipe in any direction to choose a window, then lift all three fingers to switch.",
+                                  "Swipe horizontally to open the picker, then move in any direction to choose a window. Lift all three fingers to switch.",
                                   $prefs.threeFingerSwitching)
                         Divider().opacity(0.4)
                         toggleRow("Reduce motion",
