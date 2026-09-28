@@ -44,8 +44,10 @@ final class TrackpadGestureManager {
     private typealias StartDevice = @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void
     private typealias StopDevice = @convention(c) (UnsafeMutableRawPointer?) -> Void
 
-    private static let activationDistance: Float = 0.03375
-    private static let stepDistance: Float = 0.04125
+    private static let horizontalActivationDistance: Float = 0.0225
+    private static let horizontalStepDistance: Float = 0.0275
+    private static let verticalActivationDistance: Float = 0.045
+    private static let verticalStepDistance: Float = 0.055
     private static let callback: ContactCallback = { device, touches, count, _, _ in
         guard let device else { return 0 }
         registryLock.lock()
@@ -67,9 +69,9 @@ final class TrackpadGestureManager {
     private var unregisterCallback: UnregisterCallback?
     private var stopDevice: StopDevice?
     private var trackingDevice: UnsafeMutableRawPointer?
+    private var trackedTouchIDs: Set<Int32> = []
+    private var needsTouchRebind = false
     private var initialPosition = MTPoint(x: 0, y: 0)
-    private var horizontalStep = 0
-    private var verticalStep = 0
     private var active = false
     private var eligible = false
 
@@ -166,89 +168,78 @@ final class TrackpadGestureManager {
             stateLock.unlock()
             return
         }
-        guard count == 3, let touches else {
-            if trackingDevice == device { eligible = false }
+        guard count >= 3, let touches else {
+            if trackingDevice == device { needsTouchRebind = true }
             stateLock.unlock()
             return
         }
 
-        let position = MTPoint(
-            x: (touches[0].normalized.position.x + touches[1].normalized.position.x + touches[2].normalized.position.x) / 3,
-            y: (touches[0].normalized.position.y + touches[1].normalized.position.y + touches[2].normalized.position.y) / 3
-        )
-        if trackingDevice == nil {
+        let allTouches = Array(UnsafeBufferPointer(start: touches, count: count))
+        let trackedTouches: [MTTouch]
+        let rebinding = trackingDevice == device && needsTouchRebind
+        if trackingDevice == nil || rebinding {
+            trackedTouches = Array(allTouches.prefix(3))
             trackingDevice = device
+            trackedTouchIDs = Set(trackedTouches.map(\.identifier))
+            needsTouchRebind = false
+        } else {
+            trackedTouches = allTouches.filter { trackedTouchIDs.contains($0.identifier) }
+            guard trackedTouches.count == 3 else {
+                needsTouchRebind = true
+                stateLock.unlock()
+                return
+            }
+        }
+        let position = MTPoint(
+            x: trackedTouches.reduce(0) { $0 + $1.normalized.position.x } / 3,
+            y: trackedTouches.reduce(0) { $0 + $1.normalized.position.y } / 3
+        )
+        if rebinding {
             initialPosition = position
-            horizontalStep = 0
-            verticalStep = 0
+            stateLock.unlock()
+            return
+        }
+        if !eligible {
+            initialPosition = position
             active = false
             eligible = true
             stateLock.unlock()
             emitTrackingChanged(true)
             return
         }
-        guard eligible else {
-            stateLock.unlock()
-            return
-        }
 
         let deltaX = position.x - initialPosition.x
         let deltaY = position.y - initialPosition.y
-        let targetStep: (Float) -> Int = { delta in
-            let magnitude = abs(delta)
-            guard magnitude >= Self.activationDistance else { return 0 }
-            let steps = 1 + Int((magnitude - Self.activationDistance) / Self.stepDistance)
-            return delta < 0 ? -steps : steps
-        }
-        var targetHorizontal = targetStep(deltaX)
-        var targetVertical = targetStep(deltaY)
-        var beginDirection: HotkeyManager.Direction?
-        var steps: [HotkeyManager.Direction] = []
-
+        let horizontalDistance = active ? Self.horizontalStepDistance : Self.horizontalActivationDistance
+        let horizontalProgress = abs(deltaX) / horizontalDistance
+        let direction: HotkeyManager.Direction
         if !active {
-            guard targetHorizontal != 0 || targetVertical != 0 else {
+            let verticalProgress = abs(deltaY) / Self.verticalActivationDistance
+            guard horizontalProgress >= 1, horizontalProgress >= verticalProgress else {
                 stateLock.unlock()
                 return
             }
-            active = true
-            if abs(deltaX) >= abs(deltaY) {
-                horizontalStep = targetHorizontal > 0 ? 1 : -1
-                beginDirection = horizontalStep < 0 ? .left : .right
-                initialPosition.y = position.y
-                targetVertical = 0
+            direction = deltaX < 0 ? .left : .right
+        } else {
+            let verticalProgress = abs(deltaY) / Self.verticalStepDistance
+            guard max(horizontalProgress, verticalProgress) >= 1 else {
+                stateLock.unlock()
+                return
+            }
+            if horizontalProgress >= verticalProgress {
+                direction = deltaX < 0 ? .left : .right
             } else {
-                verticalStep = targetVertical > 0 ? 1 : -1
-                beginDirection = verticalStep < 0 ? .down : .up
-                initialPosition.x = position.x
-                targetHorizontal = 0
+                direction = deltaY < 0 ? .down : .up
             }
         }
-
-        while horizontalStep != targetHorizontal {
-            if horizontalStep < targetHorizontal {
-                horizontalStep += 1
-                steps.append(.right)
-            } else {
-                horizontalStep -= 1
-                steps.append(.left)
-            }
-        }
-        while verticalStep != targetVertical {
-            if verticalStep < targetVertical {
-                verticalStep += 1
-                steps.append(.up)
-            } else {
-                verticalStep -= 1
-                steps.append(.down)
-            }
-        }
+        let isBeginning = !active
+        active = true
+        initialPosition = position
         stateLock.unlock()
 
-        if let beginDirection {
-            DispatchQueue.main.async { [weak self] in self?.onBegin?(beginDirection) }
-        }
-        for direction in steps {
-            DispatchQueue.main.async { [weak self] in self?.onStep?(direction) }
+        DispatchQueue.main.async { [weak self] in
+            if isBeginning { self?.onBegin?(direction) }
+            else { self?.onStep?(direction) }
         }
     }
 
@@ -262,9 +253,9 @@ final class TrackpadGestureManager {
 
     private func resetLocked() {
         trackingDevice = nil
+        trackedTouchIDs = []
+        needsTouchRebind = false
         initialPosition = MTPoint(x: 0, y: 0)
-        horizontalStep = 0
-        verticalStep = 0
         active = false
         eligible = false
     }

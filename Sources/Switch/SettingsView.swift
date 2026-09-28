@@ -295,14 +295,22 @@ struct SettingsView: View {
 
                 section("Sizing") {
                     VStack(spacing: 0) {
+                        toggleRow("Automatic columns",
+                                  "Choose the number of columns from the picker's display width.",
+                                  $prefs.automaticGridColumns)
+                        Divider().opacity(0.4)
                         row(title: "Columns",
-                            detail: "Number of columns in the grid view. \(prefs.gridColumns)") {
+                            detail: prefs.automaticGridColumns
+                                ? "Used only when automatic columns are off."
+                                : "Number of columns in the grid view. \(prefs.gridColumns)") {
                             Slider(value: Binding(
                                 get: { Double(prefs.gridColumns) },
                                 set: { prefs.gridColumns = Int($0.rounded()) }
                             ), in: 3...6, step: 1)
                                 .frame(width: 140)
                                 .tint(prefs.accent.color)
+                                .disabled(prefs.automaticGridColumns)
+                                .opacity(prefs.automaticGridColumns ? 0.45 : 1)
                         }
                         Divider().opacity(0.4)
                         row(title: "Rows",
