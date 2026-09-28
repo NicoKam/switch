@@ -122,7 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         trackpadGesture.onStep = { [weak self, weak model] direction in
             guard self?.trackpadGestureSessionActive == true else { return }
-            if model?.navigate(direction: direction, wrapVertical: false) == true { performGestureFeedback() }
+            if model?.navigate(direction: direction, wrapHorizontal: false, wrapVertical: false) == true {
+                performGestureFeedback()
+            }
         }
         trackpadGesture.onFinish = { [weak self, weak model, weak window] commit in
             guard let self, self.trackpadGestureSessionActive else { return }
@@ -145,9 +147,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .dropFirst()
             .sink { [weak window] _ in window?.applyContentSize() }
             .store(in: &cancellables)
+        SwitchPreferences.shared.$automaticGridColumns
+            .dropFirst()
+            .sink { [weak window] _ in window?.applyContentSize(for: SwitcherWindow.pickerScreen()) }
+            .store(in: &cancellables)
+        SwitchPreferences.shared.$gridColumns
+            .dropFirst()
+            .sink { [weak window] _ in window?.applyContentSize(for: SwitcherWindow.pickerScreen()) }
+            .store(in: &cancellables)
         SwitchPreferences.shared.$thumbnailHeight
             .dropFirst()
-            .sink { [weak window] _ in window?.applyContentSize() }
+            .sink { [weak window] _ in window?.applyContentSize(for: SwitcherWindow.pickerScreen()) }
             .store(in: &cancellables)
         SwitchPreferences.shared.$maxListRows
             .dropFirst()
@@ -414,9 +424,11 @@ final class SwitcherWindow: NSPanel {
     }
 
     func applyContentSize(for screen: NSScreen? = nil) {
+        let itemCount = model.filteredWindows.count
+        model.gridColumnCount = GridLayoutMetrics.columns(itemCount: itemCount, screen: screen)
         let fitted = SwitcherPanelSize.current(
             mode: model.mode,
-            itemCount: model.filteredWindows.count,
+            itemCount: itemCount,
             screen: screen
         )
         model.panelSize = CGSize(width: fitted.width, height: fitted.height)
@@ -499,8 +511,7 @@ private enum SwitcherPanelSize {
         let showHints = (defaults.object(forKey: SwitchPreferences.showHintStripKey) as? Bool) ?? true
         let showThumbs = (defaults.object(forKey: SwitchPreferences.showThumbnailsKey) as? Bool) ?? true
         let tileThumb: CGFloat = showThumbs ? thumb : SwitchPreferences.compactThumbnailHeight
-        let configuredColumns = (defaults.object(forKey: SwitchPreferences.gridColumnsKey) as? Int) ?? SwitchPreferences.defaultGridColumns
-        let columns = min(max(configuredColumns, 1), count)
+        let columns = GridLayoutMetrics.columns(itemCount: count, screen: screen, defaults: defaults)
         let horizontalPadding: CGFloat = 44
         let columnSpacing: CGFloat = 14
         let preferredColumnWidth = max(150, 195 * scale)

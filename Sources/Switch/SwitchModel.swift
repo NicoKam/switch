@@ -10,6 +10,7 @@ final class SwitchModel: ObservableObject {
     @Published var thumbnails: [CGWindowID: NSImage] = [:]
     @Published var filterText: String = ""
     @Published var panelSize = CGSize(width: 880, height: 560)
+    @Published var gridColumnCount = SwitchPreferences.defaultGridColumns
     /// Effective sticky for this invocation: global pref or a dedicated sticky binding (#131).
     @Published var stickySession = false
     private var currentSpaceOnly = false
@@ -114,6 +115,12 @@ final class SwitchModel: ObservableObject {
         }
         let changed = final != windows
         if changed { windows = final }
+        if initial && mode != .spaces && !SwitchPreferences.shared.verticalList {
+            gridColumnCount = GridLayoutMetrics.columns(
+                itemCount: filteredWindows.count,
+                screen: SwitcherWindow.pickerScreen()
+            )
+        }
 
         if initial {
             armFrontWindowID = WindowMRU.mostRecent(in: snapshot.windows.allWindows)?.id
@@ -135,6 +142,7 @@ final class SwitchModel: ObservableObject {
                         from: 0,
                         direction: direction,
                         count: n,
+                        wrapHorizontal: false,
                         wrapVertical: false
                     )
                 } else {
@@ -369,7 +377,11 @@ final class SwitchModel: ObservableObject {
     }
 
     @discardableResult
-    func navigate(direction: HotkeyManager.Direction, wrapVertical: Bool = true) -> Bool {
+    func navigate(
+        direction: HotkeyManager.Direction,
+        wrapHorizontal: Bool = true,
+        wrapVertical: Bool = true
+    ) -> Bool {
         let list = filteredWindows
         guard list.count > 1 else { return false }
         let previous = selected
@@ -377,6 +389,7 @@ final class SwitchModel: ObservableObject {
             from: selected,
             direction: direction,
             count: list.count,
+            wrapHorizontal: wrapHorizontal,
             wrapVertical: wrapVertical
         )
         return selected != previous
@@ -386,22 +399,28 @@ final class SwitchModel: ObservableObject {
         from index: Int,
         direction: HotkeyManager.Direction,
         count: Int,
+        wrapHorizontal: Bool,
         wrapVertical: Bool
     ) -> Int {
-        let cols = (SwitchPreferences.shared.verticalList || mode == .spaces) ? 1 : SwitchPreferences.shared.gridColumns
+        let cols = (SwitchPreferences.shared.verticalList || mode == .spaces) ? 1 : gridColumnCount
         switch direction {
         case .left:
+            if !wrapHorizontal && index % cols == 0 { return index }
             return (index - 1 + count) % count
         case .right:
+            if !wrapHorizontal && (index % cols == cols - 1 || index == count - 1) { return index }
             return (index + 1) % count
         case .up:
             if !wrapVertical && index < cols { return index }
             return ((index - cols) % count + count) % count
         case .down:
-            let candidate = index + cols
-            if candidate < count { return candidate }
+            let currentRow = index / cols
+            let nextRowStart = (currentRow + 1) * cols
+            if nextRowStart < count {
+                return min(index + cols, count - 1)
+            }
             if !wrapVertical { return index }
-            return candidate % count
+            return (index + cols) % count
         }
     }
 

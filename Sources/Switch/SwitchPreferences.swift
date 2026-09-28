@@ -2,6 +2,26 @@ import AppKit
 import SwiftUI
 import Combine
 
+enum GridLayoutMetrics {
+    static func columns(itemCount: Int, screen: NSScreen?, defaults: UserDefaults = .standard) -> Int {
+        let count = max(itemCount, 1)
+        let configured = (defaults.object(forKey: SwitchPreferences.gridColumnsKey) as? Int)
+            ?? SwitchPreferences.defaultGridColumns
+        guard defaults.bool(forKey: SwitchPreferences.automaticGridColumnsKey), let screen else {
+            return min(max(configured, 1), count)
+        }
+        let thumb = CGFloat((defaults.object(forKey: SwitchPreferences.thumbnailHeightKey) as? Double)
+            ?? SwitchPreferences.defaultThumbnailHeight)
+        let scale = thumb / CGFloat(SwitchPreferences.defaultThumbnailHeight)
+        let preferredColumnWidth = max(150, 195 * scale)
+        let availableWidth = screen.visibleFrame.width * 0.92
+        let horizontalPadding: CGFloat = 44
+        let spacing: CGFloat = 14
+        let fitting = Int((availableWidth - horizontalPadding + spacing) / (preferredColumnWidth + spacing))
+        return min(max(fitting, 1), count)
+    }
+}
+
 @MainActor
 final class SwitchPreferences: ObservableObject {
     static let shared = SwitchPreferences()
@@ -222,6 +242,10 @@ final class SwitchPreferences: ObservableObject {
         didSet { UserDefaults.standard.set(appIconSize, forKey: SwitchPreferences.appIconSizeKey) }
     }
 
+    @Published var automaticGridColumns: Bool {
+        didSet { UserDefaults.standard.set(automaticGridColumns, forKey: SwitchPreferences.automaticGridColumnsKey) }
+    }
+
     @Published var gridColumns: Int {
         didSet { UserDefaults.standard.set(gridColumns, forKey: SwitchPreferences.gridColumnsKey) }
     }
@@ -284,6 +308,7 @@ final class SwitchPreferences: ObservableObject {
     nonisolated static let vimNavigationKey = "switch.vimNavigation"
     nonisolated static let thumbnailHeightKey = "switch.thumbnailHeight"
     nonisolated static let appIconSizeKey = "switch.appIconSize"
+    nonisolated static let automaticGridColumnsKey = "switch.automaticGridColumns"
     nonisolated static let gridColumnsKey = "switch.gridColumns"
     nonisolated static let maxListRowsKey = "switch.maxListRows"
     nonisolated static let pinnedBundleIDsKey = "switch.pinnedBundleIDs"
@@ -327,6 +352,7 @@ final class SwitchPreferences: ObservableObject {
             : (UserDefaults.standard.object(forKey: SwitchPreferences.typeToFilterKey) as? Bool) ?? true
         thumbnailHeight = (UserDefaults.standard.object(forKey: SwitchPreferences.thumbnailHeightKey) as? Double) ?? Self.defaultThumbnailHeight
         appIconSize = (UserDefaults.standard.object(forKey: SwitchPreferences.appIconSizeKey) as? Double) ?? Self.defaultAppIconSize
+        automaticGridColumns = UserDefaults.standard.bool(forKey: SwitchPreferences.automaticGridColumnsKey)
         gridColumns = (UserDefaults.standard.object(forKey: SwitchPreferences.gridColumnsKey) as? Int) ?? Self.defaultGridColumns
         maxListRows = (UserDefaults.standard.object(forKey: SwitchPreferences.maxListRowsKey) as? Int) ?? Self.defaultMaxListRows
         pinnedBundleIDs = Set(UserDefaults.standard.stringArray(forKey: SwitchPreferences.pinnedBundleIDsKey) ?? [])

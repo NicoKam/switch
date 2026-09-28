@@ -320,7 +320,7 @@ struct SwitchView: View {
     }
 
     private var gridColumns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 14), count: prefs.gridColumns)
+        Array(repeating: GridItem(.flexible(), spacing: 14), count: model.gridColumnCount)
     }
 
     private func tile(window: WindowInfo, index: Int, list: [WindowInfo]) -> some View {
