@@ -279,8 +279,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Publishers.MergeMany(changes.map { $0.dropFirst().eraseToAnyPublisher() })
             .receive(on: DispatchQueue.main)
             .sink { [weak window, weak model] _ in
-                guard model?.visible == true else { return }
-                window?.applyContentSize(for: SwitcherWindow.pickerScreen())
+                guard model?.visible == true, let window else { return }
+                window.applyContentSize(for: window.screen ?? SwitcherWindow.pickerScreen())
             }
             .store(in: &cancellables)
     }
