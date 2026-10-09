@@ -170,6 +170,27 @@ extension TrackpadGestureManager {
         manager.performLivenessCheck()
         precondition(restartLevels == [false, false, true],
                      "The escalated spacing must delay the next restart")
+
+        // A stream can be dead from launch: no frame has ever arrived, so the
+        // discovery time anchors the check. Active input must trigger the rebuild;
+        // a user who simply never touches the trackpad must not.
+        manager.regressionFrame([], x: 0.55)
+        drainRegressionEvents()
+        restartLevels = []
+        manager.consecutiveRestarts = 0
+        manager.lastFrameUptime = 0
+        manager.startedAtUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
+        manager.lastRestartUptime = DispatchTime.now().uptimeNanoseconds - 300 * 1_000_000_000
+        manager.inputIdleSecondsOverride = { 999 }
+        manager.performLivenessCheck()
+        precondition(restartLevels.isEmpty, "No input activity must not rebuild a never-delivered stream")
+        manager.inputIdleSecondsOverride = { 0 }
+        manager.performLivenessCheck()
+        precondition(restartLevels == [false], "A stream dead since launch must rebuild while input is active")
+        manager.lastFrameUptime = 0
+        manager.startedAtUptime = 0
+        manager.performLivenessCheck()
+        precondition(restartLevels == [false], "No time anchor yet must not rebuild")
         print("PASS: trackpad liveness watchdog and cancelled-gesture recovery")
     }
 }
