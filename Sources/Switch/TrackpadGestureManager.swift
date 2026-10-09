@@ -96,6 +96,7 @@ final class TrackpadGestureManager {
     private var scrollSuppressionRequested = false
     private var callbackGeneration: UInt = 0
     private var lastFrameUptime: UInt64 = 0
+    private var startedAtUptime: UInt64 = 0
     private var lastRestartUptime: UInt64 = 0
     private var consecutiveRestarts: UInt = 0
     private var lastStartFailureLog: String?
@@ -181,6 +182,7 @@ final class TrackpadGestureManager {
         unregisterCallback = unregister
         startDeviceCallback = startDevice
         callbackGeneration &+= 1
+        startedAtUptime = DispatchTime.now().uptimeNanoseconds
         lastStartFailureLog = nil
         stateLock.unlock()
         for device in discovered {
@@ -273,11 +275,18 @@ final class TrackpadGestureManager {
     func performLivenessCheck() {
         let now = DispatchTime.now().uptimeNanoseconds
         stateLock.lock()
-        guard framework != nil, trackingDevice == nil, !active, lastFrameUptime != 0 else {
+        guard framework != nil, trackingDevice == nil, !active else {
             stateLock.unlock()
             return
         }
-        let frameAge = now &- lastFrameUptime
+        // A stream can be dead from launch: no frame has ever arrived, so the start
+        // time anchors the check instead of the last-frame time.
+        let reference = lastFrameUptime != 0 ? lastFrameUptime : startedAtUptime
+        guard reference != 0 else {
+            stateLock.unlock()
+            return
+        }
+        let frameAge = now &- reference
         let restarts = consecutiveRestarts
         stateLock.unlock()
         guard frameAge > Self.livenessThresholdNanos else { return }
