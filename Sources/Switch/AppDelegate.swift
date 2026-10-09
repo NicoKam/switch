@@ -365,8 +365,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor private func restartTrackpadMonitoring() {
         guard trackpadGestureAvailable, let trackpadGesture, trackpadGesture.isRunning else { return }
-        trackpadGesture.stop()
-        trackpadGesture.start()
+        // Sleep/wake can invalidate the device handles themselves, so a wake does a
+        // full re-discovery rather than re-registering the cached ones.
+        trackpadGesture.rediscoverDevices()
     }
 
     private func schedulePresent(window: SwitcherWindow) {
