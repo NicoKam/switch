@@ -1,6 +1,7 @@
 extension TrackpadGestureManager {
     var cancelledUntilReleaseForRegression: Bool { cancelledUntilRelease }
     var runningForRegression: Bool { framework != nil }
+    var consecutiveRestartsForRegression: UInt { consecutiveRestarts }
 
     func regressionAttachDevice() {
         precondition(framework == nil)
@@ -124,19 +125,19 @@ extension TrackpadGestureManager {
         // Liveness: a silent contact stream while system input is active must rebuild
         // the registration; recent frames, idle input, or a gesture in progress must not.
         events = []
-        var restarts = 0
-        manager.livenessRestart = { restarts += 1 }
+        var restartLevels: [Bool] = []
+        manager.livenessRestart = { restartLevels.append($0) }
         manager.inputIdleSecondsOverride = { 0 }
         manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
         manager.performLivenessCheck()
-        precondition(restarts == 1, "Stale frames with active input must rebuild the registration")
+        precondition(restartLevels == [false], "Stale frames with active input must re-register the cached devices")
         manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds
         manager.performLivenessCheck()
-        precondition(restarts == 1, "A recent frame must suppress the restart")
+        precondition(restartLevels == [false], "A recent frame must suppress the restart")
         manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
         manager.inputIdleSecondsOverride = { 999 }
         manager.performLivenessCheck()
-        precondition(restarts == 1, "No input activity means there is nothing to rebuild")
+        precondition(restartLevels == [false], "No input activity means there is nothing to rebuild")
         manager.inputIdleSecondsOverride = { 0 }
         events = []
         manager.regressionFrame([1, 2, 3], x: 0.5)
@@ -145,11 +146,30 @@ extension TrackpadGestureManager {
         precondition(events == ["begin:right", "tracking:true"], "Gesture must be active before the mid-gesture check")
         manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
         manager.performLivenessCheck()
-        precondition(restarts == 1, "A gesture in progress must not be restarted")
+        precondition(restartLevels == [false], "A gesture in progress must not be restarted")
         manager.regressionFrame([], x: 0.55)
         drainRegressionEvents()
         precondition(events == ["begin:right", "tracking:true", "tracking:false", "finish:true"],
                      "The mid-gesture contacts must still finish normally")
+
+        // Receiving frames again resets the escalation; the next silent window starts
+        // cheap (cached re-register) and persistent silence escalates to rediscovery
+        // with growing spacing.
+        precondition(manager.consecutiveRestartsForRegression == 0, "Frames must reset restart escalation")
+        manager.lastRestartUptime = DispatchTime.now().uptimeNanoseconds - 300 * 1_000_000_000
+        manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
+        manager.performLivenessCheck()
+        precondition(restartLevels == [false, false], "A fresh silent window restarts at the cheap level")
+        manager.lastRestartUptime = DispatchTime.now().uptimeNanoseconds - 300 * 1_000_000_000
+        manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
+        manager.performLivenessCheck()
+        precondition(restartLevels == [false, false, true],
+                     "A second consecutive failure must escalate to full rediscovery")
+        manager.lastRestartUptime = DispatchTime.now().uptimeNanoseconds
+        manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
+        manager.performLivenessCheck()
+        precondition(restartLevels == [false, false, true],
+                     "The escalated spacing must delay the next restart")
         print("PASS: trackpad liveness watchdog and cancelled-gesture recovery")
     }
 }
