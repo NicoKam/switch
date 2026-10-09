@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Darwin
 
@@ -48,6 +49,13 @@ final class TrackpadGestureManager {
     private static let horizontalStepDistance: Float = 0.0275
     private static let verticalActivationDistance: Float = 0.045
     private static let verticalStepDistance: Float = 0.055
+
+    /// A registration can go silently stale (input subsystem re-enumeration), after
+    /// which no contact frames are delivered even though the trackpad is in use.
+    /// When this much time passes with system touch-like input but no frames, the
+    /// registration is rebuilt.
+    private static let livenessThresholdNanos: UInt64 = 30 * 1_000_000_000
+    private static let restartSpacingNanos: UInt64 = 60 * 1_000_000_000
     private static let callback: ContactCallback = { device, touches, count, _, _ in
         guard let device else { return 0 }
         registryLock.lock()
@@ -62,6 +70,9 @@ final class TrackpadGestureManager {
     }
     private static let registryLock = NSLock()
     private static var owners: [UnsafeMutableRawPointer: TrackpadGestureManager] = [:]
+    // Kept mapped for the process lifetime: dlclose while a contact callback is in
+    // flight on a device thread would crash, and reloading costs nothing.
+    private static var libraryHandle: UnsafeMutableRawPointer?
 
     private let stateLock = NSLock()
     private var framework: UnsafeMutableRawPointer?
@@ -75,11 +86,25 @@ final class TrackpadGestureManager {
     private var active = false
     private var eligible = false
     private var cancelledUntilRelease = false
+    private var cancelledTouchIDs: Set<Int32> = []
     private var scrollSuppressionRequested = false
     private var callbackGeneration: UInt = 0
+    private var lastFrameUptime: UInt64 = 0
+    private var lastRestartUptime: UInt64 = 0
+    private var lastStartFailureLog: String?
+    /// Regression hook: when set, replaces the system-wide idle query.
+    var inputIdleSecondsOverride: (() -> Double)?
+    /// Regression hook: when set, replaces the stop/start rebuild.
+    var livenessRestart: (() -> Void)?
 
     deinit {
         stop()
+    }
+
+    var isRunning: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return framework != nil
     }
 
     @discardableResult
@@ -89,7 +114,8 @@ final class TrackpadGestureManager {
         stateLock.unlock()
         if alreadyStarted { return true }
 
-        guard let library = dlopen("/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport", RTLD_NOW) else {
+        guard let library = Self.loadLibrary() else {
+            logStartFailure("failed to load MultitouchSupport")
             return false
         }
         guard let createList: CreateList = symbol("MTDeviceCreateList", in: library),
@@ -98,7 +124,7 @@ final class TrackpadGestureManager {
               let startDevice: StartDevice = symbol("MTDeviceStart", in: library),
               let stopDevice: StopDevice = symbol("MTDeviceStop", in: library),
               let list = createList()?.takeRetainedValue() else {
-            dlclose(library)
+            logStartFailure("MultitouchSupport symbols unavailable")
             return false
         }
 
@@ -109,7 +135,7 @@ final class TrackpadGestureManager {
         }
 
         guard !discovered.isEmpty else {
-            dlclose(library)
+            logStartFailure("no trackpad devices found")
             return false
         }
         stateLock.lock()
@@ -118,6 +144,7 @@ final class TrackpadGestureManager {
         unregisterCallback = unregister
         self.stopDevice = stopDevice
         callbackGeneration &+= 1
+        lastStartFailureLog = nil
         stateLock.unlock()
         for device in discovered {
             Self.registryLock.lock()
@@ -126,7 +153,25 @@ final class TrackpadGestureManager {
             register(device, Self.callback)
             startDevice(device, 0)
         }
+        Self.log("monitoring \(discovered.count) trackpad device(s)")
         return true
+    }
+
+    private static func loadLibrary() -> UnsafeMutableRawPointer? {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        if let handle = libraryHandle { return handle }
+        let handle = dlopen("/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport", RTLD_NOW)
+        libraryHandle = handle
+        return handle
+    }
+
+    private func logStartFailure(_ message: String) {
+        stateLock.lock()
+        let changed = lastStartFailureLog != message
+        lastStartFailureLog = message
+        stateLock.unlock()
+        if changed { Self.log(message) }
     }
 
     /// Discard queued input and wait for the current contacts to lift before recognizing another gesture.
@@ -136,13 +181,58 @@ final class TrackpadGestureManager {
         active = false
         eligible = false
         cancelledUntilRelease = trackingDevice != nil
+        cancelledTouchIDs = trackingDevice != nil ? trackedTouchIDs : []
         setScrollSuppressionLocked(false)
         stateLock.unlock()
     }
 
+    /// Periodic self-check: if the system is producing touch-like input but no contact
+    /// frame has arrived for a while, the registration has gone stale and is rebuilt.
+    /// Skipped while a gesture is in progress.
+    func performLivenessCheck() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        stateLock.lock()
+        guard framework != nil, trackingDevice == nil, !active, lastFrameUptime != 0 else {
+            stateLock.unlock()
+            return
+        }
+        let frameAge = now &- lastFrameUptime
+        stateLock.unlock()
+        guard frameAge > Self.livenessThresholdNanos,
+              lastRestartUptime == 0 || now &- lastRestartUptime > Self.restartSpacingNanos else {
+            return
+        }
+
+        let idleSeconds = inputIdleSecondsOverride?() ?? Self.systemInputIdleSeconds()
+        guard idleSeconds < Double(Self.livenessThresholdNanos) / 1_000_000_000 else { return }
+
+        stateLock.lock()
+        lastRestartUptime = now
+        stateLock.unlock()
+        Self.log(String(
+            format: "contact stream silent for %.0fs while input is active — re-registering",
+            Double(frameAge) / 1_000_000_000
+        ))
+        if let restart = livenessRestart {
+            restart()
+        } else {
+            stop()
+            if !start() { Self.log("re-registration failed; the availability poll will retry") }
+        }
+    }
+
+    private static func systemInputIdleSeconds() -> Double {
+        [
+            CGEventType.scrollWheel,      // two-finger scrolling
+            CGEventType.mouseMoved,       // pointer movement
+            CGEventType.leftMouseDragged
+        ]
+        .map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }
+        .min() ?? .infinity
+    }
+
     func stop() {
         stateLock.lock()
-        let handle = framework
         let currentDevices = devices
         let unregister = unregisterCallback
         let stopDevice = stopDevice
@@ -165,7 +255,7 @@ final class TrackpadGestureManager {
             Self.owners.removeValue(forKey: device)
             Self.registryLock.unlock()
         }
-        if let handle { dlclose(handle) }
+        Self.log("monitoring stopped")
     }
 
     private func handle(device: UnsafeMutableRawPointer, touches: UnsafeMutablePointer<MTTouch>?, count: Int) {
@@ -174,6 +264,7 @@ final class TrackpadGestureManager {
             stateLock.unlock()
             return
         }
+        lastFrameUptime = DispatchTime.now().uptimeNanoseconds
         if count == 0 {
             let shouldCommit = active
             let wasTracking = trackingDevice == device
@@ -189,9 +280,20 @@ final class TrackpadGestureManager {
             stateLock.unlock()
             return
         }
-        guard !cancelledUntilRelease else {
-            stateLock.unlock()
-            return
+        if cancelledUntilRelease {
+            // The cancelled gesture's contacts are ignored until they lift. But if a
+            // fully fresh set of touch IDs arrives, the lift frame was lost (contacts
+            // ended while cancellation was still being processed) — treat it as a new
+            // gesture instead of staying cancelled forever.
+            let freshContacts = count >= 3 && touches != nil && Set(
+                UnsafeBufferPointer(start: touches!, count: count).map(\.identifier)
+            ).isDisjoint(with: cancelledTouchIDs)
+            guard freshContacts else {
+                stateLock.unlock()
+                return
+            }
+            Self.log("cancelled gesture superseded by a fresh set of contacts")
+            resetLocked()
         }
         guard count >= 3, let touches else {
             if trackingDevice == device {
@@ -302,6 +404,11 @@ final class TrackpadGestureManager {
         active = false
         eligible = false
         cancelledUntilRelease = false
+        cancelledTouchIDs = []
+    }
+
+    private static func log(_ message: String) {
+        NSLog("Switch: trackpad \(message)")
     }
 
     private func symbol<T>(_ name: String, in handle: UnsafeMutableRawPointer) -> T? {
