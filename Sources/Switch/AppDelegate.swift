@@ -198,6 +198,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.startFocusTrackerIfNeeded()
                 }
                 self.updateTrackpadGestureAvailability()
+                self.trackpadGesture?.performLivenessCheck()
+            }
+        }
+
+        // Sleep/wake can invalidate the contact-frame registration; rebuild eagerly.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.restartTrackpadMonitoring()
             }
         }
 
@@ -351,6 +361,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The permissions poll also retries discovery if no trackpad was connected at startup.
         trackpadGesture?.start()
+    }
+
+    @MainActor private func restartTrackpadMonitoring() {
+        guard trackpadGestureAvailable, let trackpadGesture, trackpadGesture.isRunning else { return }
+        trackpadGesture.stop()
+        trackpadGesture.start()
     }
 
     private func schedulePresent(window: SwitcherWindow) {

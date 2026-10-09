@@ -99,5 +99,57 @@ extension TrackpadGestureManager {
         drainRegressionEvents()
         precondition(events.isEmpty, "Frames arriving after stop must be ignored")
         print("PASS: trackpad activation, pause/resume, fourth finger, cancellation and queued callbacks")
+
+        // A cancelled gesture whose lift frame was lost (contacts ended while
+        // cancellation was still being processed) must not wedge the manager:
+        // a fully fresh set of touch IDs starts a new gesture without a count == 0 frame.
+        events = []
+        manager.regressionAttachDevice()
+        manager.regressionFrame([1, 2, 3], x: 0.5)
+        manager.regressionFrame([1, 2, 3], x: 0.55)
+        manager.cancelCurrentGesture()
+        manager.regressionFrame([1, 2, 3], x: 0.65)
+        drainRegressionEvents()
+        precondition(events == ["tracking:false"],
+                     "The cancelled gesture's own contacts must stay ignored until they lift")
+        events = []
+        manager.regressionFrame([7, 8, 9], x: 0.5)
+        manager.regressionFrame([7, 8, 9], x: 0.55)
+        drainRegressionEvents()
+        precondition(events == ["begin:right", "tracking:true"],
+                     "Fresh contacts must start a new gesture without a lift frame")
+        manager.regressionFrame([], x: 0.55)
+        drainRegressionEvents()
+
+        // Liveness: a silent contact stream while system input is active must rebuild
+        // the registration; recent frames, idle input, or a gesture in progress must not.
+        events = []
+        var restarts = 0
+        manager.livenessRestart = { restarts += 1 }
+        manager.inputIdleSecondsOverride = { 0 }
+        manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
+        manager.performLivenessCheck()
+        precondition(restarts == 1, "Stale frames with active input must rebuild the registration")
+        manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds
+        manager.performLivenessCheck()
+        precondition(restarts == 1, "A recent frame must suppress the restart")
+        manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
+        manager.inputIdleSecondsOverride = { 999 }
+        manager.performLivenessCheck()
+        precondition(restarts == 1, "No input activity means there is nothing to rebuild")
+        manager.inputIdleSecondsOverride = { 0 }
+        events = []
+        manager.regressionFrame([1, 2, 3], x: 0.5)
+        manager.regressionFrame([1, 2, 3], x: 0.55)
+        drainRegressionEvents()
+        precondition(events == ["begin:right", "tracking:true"], "Gesture must be active before the mid-gesture check")
+        manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
+        manager.performLivenessCheck()
+        precondition(restarts == 1, "A gesture in progress must not be restarted")
+        manager.regressionFrame([], x: 0.55)
+        drainRegressionEvents()
+        precondition(events == ["begin:right", "tracking:true", "tracking:false", "finish:true"],
+                     "The mid-gesture contacts must still finish normally")
+        print("PASS: trackpad liveness watchdog and cancelled-gesture recovery")
     }
 }
