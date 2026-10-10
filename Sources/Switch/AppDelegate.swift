@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var armedWatchdog: Timer?
     private var clickAwayMonitor: Any?
     private var pendingPresent: DispatchWorkItem?
+    private var lastAvailabilityLog = ""
     private var cancellables: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -350,7 +351,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor private func updateTrackpadGestureAvailability() {
-        guard trackpadGestureAvailable else {
+        let available = trackpadGestureAvailable
+        let summary = "availability: available=\(available) threeFinger=\(SwitchPreferences.shared.threeFingerSwitching) recording=\(hotkeyRecording) perms=\(requiredPermissionsGranted)"
+        if summary != lastAvailabilityLog {
+            lastAvailabilityLog = summary
+            TrackpadGestureManager.dbgLog(summary)
+        }
+        guard available else {
             if trackpadGestureSessionActive {
                 model?.cancel()
                 window?.dismiss()
