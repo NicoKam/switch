@@ -134,7 +134,9 @@ final class TrackpadGestureManager {
         let cachedDevices = devices
         let cachedRegister = registerCallback
         stateLock.unlock()
-        if alreadyStarted { return true }
+        // framework != nil with no devices means a rediscovery was interrupted
+        // before discovery succeeded: fall through and discover again.
+        if alreadyStarted && !cachedDevices.isEmpty { return true }
 
         if !cachedDevices.isEmpty, let register = cachedRegister {
             // Re-enable after stop(): the device threads are still running from the
@@ -224,6 +226,7 @@ final class TrackpadGestureManager {
         let currentDevices = devices
         let unregister = unregisterCallback
         let shouldCancel = active
+        let wasEnabled = framework != nil
         framework = nil
         callbackGeneration &+= 1
         resetLocked()
@@ -238,7 +241,9 @@ final class TrackpadGestureManager {
             Self.owners.removeValue(forKey: device)
             Self.registryLock.unlock()
         }
-        Self.log("callbacks unregistered (\(currentDevices.count) device(s) kept for restart)")
+        if wasEnabled {
+            Self.log("callbacks unregistered (\(currentDevices.count) device(s) kept for restart)")
+        }
     }
 
     /// Full re-discovery for a stream that re-registration could not revive. The
@@ -338,6 +343,9 @@ final class TrackpadGestureManager {
         }
         lastFrameUptime = DispatchTime.now().uptimeNanoseconds
         consecutiveRestarts = 0
+        if count > 0 {
+            Self.throttledFrameLog(count, tracking: trackingDevice != nil, active: active, cancelled: cancelledUntilRelease)
+        }
         if count == 0 {
             let shouldCommit = active
             let wasTracking = trackingDevice == device
@@ -482,6 +490,31 @@ final class TrackpadGestureManager {
 
     private static func log(_ message: String) {
         NSLog("Switch: trackpad \(message)")
+        dbgLog(message)
+    }
+
+    /// File-based diagnostics: NSLog does not surface in the unified log for this
+    /// app, and gesture failures have been invisible without this record.
+    static func dbgLog(_ message: String) {
+        let line = "\(Date()) trackpad \(message)\n"
+        if let data = line.data(using: .utf8) {
+            let path = "/tmp/switch-gesture.log" as NSString
+            if let fh = FileHandle(forWritingAtPath: path as String) {
+                fh.seekToEndOfFile()
+                fh.write(data)
+                fh.closeFile()
+            } else {
+                try? data.write(to: URL(fileURLWithPath: path as String))
+            }
+        }
+    }
+
+    private static var lastFrameLogUptime: UInt64 = 0
+    private static func throttledFrameLog(_ count: Int, tracking: Bool, active: Bool, cancelled: Bool) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now &- lastFrameLogUptime > 1_000_000_000 else { return }
+        lastFrameLogUptime = now
+        dbgLog("frames: count=\(count) tracking=\(tracking) active=\(active) cancelled=\(cancelled)")
     }
 
     private func symbol<T>(_ name: String, in handle: UnsafeMutableRawPointer) -> T? {
