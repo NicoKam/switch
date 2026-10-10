@@ -122,22 +122,20 @@ extension TrackpadGestureManager {
         manager.regressionFrame([], x: 0.55)
         drainRegressionEvents()
 
-        // Liveness: a silent contact stream while system input is active must rebuild
-        // the registration; recent frames, idle input, or a gesture in progress must not.
+        // Liveness: a silent contact stream must rebuild the registration without
+        // requiring fresh input once the stream has delivered frames before — a
+        // three-finger swipe produces no observable events at all. Recent frames
+        // or a gesture in progress still suppress the restart.
         events = []
         var restartLevels: [Bool] = []
         manager.livenessRestart = { restartLevels.append($0) }
-        manager.inputIdleSecondsOverride = { 0 }
+        manager.inputIdleSecondsOverride = { 999 }   // no observable input at all
         manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
         manager.performLivenessCheck()
-        precondition(restartLevels == [false], "Stale frames with active input must re-register the cached devices")
+        precondition(restartLevels == [false], "A stale delivered stream must rebuild even without observable input")
         manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds
         manager.performLivenessCheck()
         precondition(restartLevels == [false], "A recent frame must suppress the restart")
-        manager.lastFrameUptime = DispatchTime.now().uptimeNanoseconds - 120 * 1_000_000_000
-        manager.inputIdleSecondsOverride = { 999 }
-        manager.performLivenessCheck()
-        precondition(restartLevels == [false], "No input activity means there is nothing to rebuild")
         manager.inputIdleSecondsOverride = { 0 }
         events = []
         manager.regressionFrame([1, 2, 3], x: 0.5)
