@@ -287,11 +287,14 @@ final class TrackpadGestureManager {
         // A stream can be dead from launch: no frame has ever arrived, so the start
         // time anchors the check instead of the last-frame time.
         let reference = lastFrameUptime != 0 ? lastFrameUptime : startedAtUptime
-        guard reference != 0 else {
+        // `now` was sampled before the MT thread could stamp a newer frame — skip
+        // this check rather than underflowing on the age comparison.
+        guard reference != 0, now >= reference else {
             stateLock.unlock()
             return
         }
         let frameAge = now &- reference
+        let hasDelivered = lastFrameUptime != 0
         let restarts = consecutiveRestarts
         stateLock.unlock()
         guard frameAge > Self.livenessThresholdNanos else { return }
@@ -302,8 +305,15 @@ final class TrackpadGestureManager {
         )
         guard lastRestartUptime == 0 || now &- lastRestartUptime > spacing else { return }
 
-        let idleSeconds = inputIdleSecondsOverride?() ?? Self.systemInputIdleSeconds()
-        guard idleSeconds < Double(Self.livenessThresholdNanos) / 1_000_000_000 else { return }
+        // A three-finger swipe produces no observable events at all — no scrolling,
+        // no pointer movement, no drag — so input activity must not gate recovery
+        // once the stream has delivered frames before: the user can be trying the
+        // gesture over and over while the idle query says "no input". Only a stream
+        // that never delivered (mouse-only desktops, launch-time deadness) still
+        // requires evidence of input before spending a restart.
+        let inputActive = (inputIdleSecondsOverride?() ?? Self.systemInputIdleSeconds())
+            < Double(Self.livenessThresholdNanos) / 1_000_000_000
+        guard inputActive || hasDelivered else { return }
 
         let fullRediscovery = restarts >= 1
         stateLock.lock()
@@ -494,9 +504,10 @@ final class TrackpadGestureManager {
     }
 
     /// File-based diagnostics: NSLog does not surface in the unified log for this
-    /// app, and gesture failures have been invisible without this record.
+    /// app, and gesture failures have been invisible without this record. The pid
+    /// separates app noise from regression-test noise sharing the file.
     static func dbgLog(_ message: String) {
-        let line = "\(Date()) trackpad \(message)\n"
+        let line = "\(Date()) [pid \(ProcessInfo.processInfo.processIdentifier)] trackpad \(message)\n"
         if let data = line.data(using: .utf8) {
             let path = "/tmp/switch-gesture.log" as NSString
             if let fh = FileHandle(forWritingAtPath: path as String) {
