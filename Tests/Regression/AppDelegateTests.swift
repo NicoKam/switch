@@ -1,5 +1,9 @@
 extension AppDelegate {
     @MainActor static func runRegressionTests() {
+        let prefs = SwitchPreferences.shared
+        prefs.verticalList = false
+        prefs.automaticGridColumns = false
+        prefs.gridColumns = 4
         let delegate = AppDelegate()
         let model = SwitchModel()
         let window = SwitcherWindow(model: model)
@@ -13,27 +17,27 @@ extension AppDelegate {
         drainRegressionEvents()
         model.visible = true
         model.windows = regressionWindows(4)
-        drainRegressionEvents()
+        drainRegressionEvents(until: { model.gridColumnCount == 4 })
         precondition(model.gridColumnCount == 4,
-                     "Initial layout: columns=\(model.gridColumnCount), windows=\(model.windows.count), preference=\(SwitchPreferences.shared.gridColumns), stored=\(String(describing: UserDefaults.standard.object(forKey: SwitchPreferences.gridColumnsKey)))")
+                     "Initial layout: visible=\(model.visible), filtered=\(model.filteredWindows.count), automatic=\(UserDefaults.standard.bool(forKey: SwitchPreferences.automaticGridColumnsKey)), vertical=\(prefs.verticalList), columns=\(model.gridColumnCount), windows=\(model.windows.count), preference=\(SwitchPreferences.shared.gridColumns), stored=\(String(describing: UserDefaults.standard.object(forKey: SwitchPreferences.gridColumnsKey)))")
         let oneRowHeight = model.panelSize.height
         model.windows = regressionWindows(5)
-        drainRegressionEvents()
+        drainRegressionEvents(until: { model.panelSize.height > oneRowHeight })
         precondition(model.panelSize.height > oneRowHeight, "Resize must read the newly published window count")
         model.windows = regressionWindows(4)
-        drainRegressionEvents()
+        drainRegressionEvents(until: { model.panelSize.height == oneRowHeight })
         precondition(model.panelSize.height == oneRowHeight, "Removing a window must shrink the panel")
 
         model.windows = regressionWindows(8)
         SwitchPreferences.shared.gridColumns = 6
-        drainRegressionEvents()
+        drainRegressionEvents(until: { model.gridColumnCount == 6 })
         precondition(model.gridColumnCount == 6, "Column changes must read defaults after didSet")
         SwitchPreferences.shared.automaticGridColumns = true
-        drainRegressionEvents()
+        drainRegressionEvents(until: { model.gridColumnCount == GridLayoutMetrics.columns(itemCount: 8, screen: SwitcherWindow.pickerScreen()) })
         precondition(model.gridColumnCount == GridLayoutMetrics.columns(itemCount: 8, screen: SwitcherWindow.pickerScreen()))
         SwitchPreferences.shared.gridColumns = 3
         SwitchPreferences.shared.automaticGridColumns = false
-        drainRegressionEvents()
+        drainRegressionEvents(until: { model.gridColumnCount == 3 })
         precondition(model.gridColumnCount == 3, "Disabling automatic columns must apply the latest manual count")
 
         gesture.regressionAttachDevice()

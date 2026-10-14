@@ -69,26 +69,65 @@ final class TrackpadGestureManager {
     /// starve the kernel's multitouch queue for every client.
     private static let retirementDelayNanos: UInt64 = 2 * 1_000_000_000
 
+    // The registry captures an epoch before entering handle(). Removing an owner
+    // cannot revoke a callback that already captured it, so handle validates it too.
+    private final class DeviceRegistration {
+        weak var owner: TrackpadGestureManager?
+        let epoch: UInt
+        // Protected by registryLock, including callbacks waiting for stateLock.
+        var inFlight = 0
+
+        init(owner: TrackpadGestureManager, epoch: UInt) {
+            self.owner = owner
+            self.epoch = epoch
+        }
+    }
+
+    private struct DeviceHealth {
+        let registration: DeviceRegistration
+        let startedAtUptime: UInt64
+        var lastFrameUptime: UInt64 = 0
+        var lastFrameLogUptime: UInt64 = 0
+
+        func frameAge(at now: UInt64) -> UInt64? {
+            let reference = lastFrameUptime != 0 ? lastFrameUptime : startedAtUptime
+            guard reference != 0, now >= reference else { return nil }
+            return now - reference
+        }
+    }
+
     private static let callback: ContactCallback = { device, touches, count, _, _ in
         guard let device else { return 0 }
         registryLock.lock()
-        let owner = owners[device]
+        guard let registration = owners[device], let owner = registration.owner else {
+            registryLock.unlock()
+            return 0
+        }
+        registration.inFlight += 1
         registryLock.unlock()
-        owner?.handle(
+        defer {
+            registryLock.lock()
+            registration.inFlight -= 1
+            registryLock.unlock()
+        }
+        owner.handle(
             device: device,
+            registration: registration,
             touches: touches?.assumingMemoryBound(to: MTTouch.self),
             count: Int(count)
         )
         return 0
     }
     private static let registryLock = NSLock()
-    private static var owners: [UnsafeMutableRawPointer: TrackpadGestureManager] = [:]
-    // Kept mapped for the process lifetime: dlclose while a contact callback is in
-    // flight on a device thread would crash, and reloading costs nothing.
+    private static var owners: [UnsafeMutableRawPointer: DeviceRegistration] = [:]
+    // Neither the library nor the extra device references are released during the
+    // process lifetime: teardown must never enter the framework's final-release path.
     private static var libraryHandle: UnsafeMutableRawPointer?
+    private static var keepAliveDevices: [AnyObject] = []
 
     private struct RetiringDevice {
         var device: UnsafeMutableRawPointer
+        var registration: DeviceRegistration
         var unregisteredAtNanos: UInt64
     }
 
@@ -96,6 +135,7 @@ final class TrackpadGestureManager {
     // framework doubles as the enabled flag: while nil, contact frames are ignored.
     private var framework: UnsafeMutableRawPointer?
     private var devices: [UnsafeMutableRawPointer] = []
+    private var deviceHealth: [UnsafeMutableRawPointer: DeviceHealth] = [:]
     private var retiringDevices: [RetiringDevice] = []
     private var registerCallback: RegisterCallback?
     private var unregisterCallback: UnregisterCallback?
@@ -111,17 +151,10 @@ final class TrackpadGestureManager {
     private var cancelledTouchIDs: Set<Int32> = []
     private var scrollSuppressionRequested = false
     private var callbackGeneration: UInt = 0
-    private var lastFrameUptime: UInt64 = 0
-    private var startedAtUptime: UInt64 = 0
+    private var lifecycleCleanupPending = false
     private var lastRestartUptime: UInt64 = 0
     private var consecutiveRestarts: UInt = 0
     private var lastStartFailureLog: String?
-    // One strong reference per discovered device, held for the process lifetime:
-    // without it the device thread's exit release hits refcount zero and the
-    // framework's final-release path re-stops a stopped port and crashes.
-    private var keepAliveDevices: [AnyObject] = []
-    /// Regression hook: when set, replaces the system-wide idle query.
-    var inputIdleSecondsOverride: (() -> Double)?
     /// Regression hook: when set, replaces the rediscovery rebuild.
     var livenessRestart: (() -> Void)?
 
@@ -176,7 +209,10 @@ final class TrackpadGestureManager {
         for index in 0..<CFArrayGetCount(list) {
             guard let device = CFArrayGetValueAtIndex(list, index) else { continue }
             let pointer = UnsafeMutableRawPointer(mutating: device)
-            keepAliveDevices.append(unsafeBitCast(pointer, to: AnyObject.self))
+            guard !discovered.contains(pointer) else { continue }
+            Self.registryLock.lock()
+            Self.keepAliveDevices.append(unsafeBitCast(pointer, to: AnyObject.self))
+            Self.registryLock.unlock()
             discovered.append(pointer)
         }
 
@@ -192,17 +228,27 @@ final class TrackpadGestureManager {
         startDeviceCallback = startDevice
         stopDeviceCallback = stopDevice
         callbackGeneration &+= 1
-        startedAtUptime = DispatchTime.now().uptimeNanoseconds
+        let now = DispatchTime.now().uptimeNanoseconds
+        deviceHealth = Dictionary(uniqueKeysWithValues: discovered.map { device in
+            (device, DeviceHealth(
+                registration: DeviceRegistration(owner: self, epoch: callbackGeneration),
+                startedAtUptime: now
+            ))
+        })
+        let registrations = deviceHealth
         lastStartFailureLog = nil
         stateLock.unlock()
         for device in discovered {
             Self.registryLock.lock()
-            Self.owners[device] = self
+            Self.owners[device] = registrations[device]!.registration
             Self.registryLock.unlock()
             register(device, Self.callback)
             startDevice(device, 0)
         }
-        Self.log("monitoring \(discovered.count) trackpad device(s)")
+        Self.log("monitoring \(discovered.count) trackpad device(s), epoch=\(callbackGeneration), retained=\(Self.retainedDeviceCount)")
+        for device in discovered {
+            Self.log("registered device=\(device) epoch=\(registrations[device]!.registration.epoch)")
+        }
         return true
     }
 
@@ -225,156 +271,179 @@ final class TrackpadGestureManager {
         if changed { Self.log(message) }
     }
 
-    /// Suspend recognition: unregister the contact callbacks; the devices move to
-    /// the retirement queue. framework doubling as the enabled flag means frames
-    /// arriving during the unregister→stop window are ignored.
+    /// Lifecycle cleanup is queued under stateLock, before any new input. It must
+    /// survive later registration generations; filtering it like input would leave
+    /// AppDelegate's picker session and global scroll suppression behind.
+    private func terminateGestureLocked(reason: String) {
+        callbackGeneration &+= 1
+        let wasActive = active
+        let wasSuppressed = scrollSuppressionRequested
+        resetLocked(notifyScrollSuppression: false)
+        if !lifecycleCleanupPending {
+            lifecycleCleanupPending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.stateLock.lock()
+                self.lifecycleCleanupPending = false
+                self.stateLock.unlock()
+                self.onTrackingChanged?(false)
+                self.onFinish?(false)
+            }
+        }
+        Self.log("session cancelled: reason=\(reason) active=\(wasActive) suppressed=\(wasSuppressed) generation=\(callbackGeneration)")
+    }
+
+    /// Suspend recognition; the poll continues draining the retirement queue.
     func stop() {
         stateLock.lock()
         let currentDevices = devices
+        let health = deviceHealth
         let unregister = unregisterCallback
-        let shouldCancel = active
         let wasEnabled = framework != nil
         framework = nil
         devices = []
-        callbackGeneration &+= 1
-        resetLocked()
-        if shouldCancel {
-            deliver(generation: callbackGeneration) { $0.onFinish?(false) }
+        deviceHealth = [:]
+        if wasEnabled {
+            terminateGestureLocked(reason: "monitoring disabled")
         }
+        lastRestartUptime = 0
+        consecutiveRestarts = 0
         stateLock.unlock()
 
-        queueForRetirement(currentDevices, unregister: unregister)
+        queueForRetirement(currentDevices, health: health, unregister: unregister)
         if wasEnabled {
             Self.log("callbacks unregistered (\(currentDevices.count) device(s) queued for retirement)")
         }
     }
 
-    /// Full re-discovery: rebuild the registration on fresh device objects. The
-    /// old ones are unregistered and retired on the delay schedule.
+    /// Full discovery on fresh objects; live gestures defer it, stale ones are cancelled.
     func rediscoverDevices() {
         stateLock.lock()
         guard framework != nil else {
             stateLock.unlock()
             return
         }
-        // A gesture left mid-flight by a dead stream must not block the rebuild.
         let now = DispatchTime.now().uptimeNanoseconds
-        let reference = lastFrameUptime != 0 ? lastFrameUptime : startedAtUptime
-        if reference != 0, now >= reference, now &- reference > Self.livenessThresholdNanos,
-           trackingDevice != nil || active {
-            resetLocked()
-        }
-        guard trackingDevice == nil, !active else {
+        if let trackingDevice,
+           let age = deviceHealth[trackingDevice]?.frameAge(at: now),
+           age <= Self.livenessThresholdNanos {
             stateLock.unlock()
             return
         }
         let oldDevices = devices
+        let health = deviceHealth
         let unregister = unregisterCallback
         devices = []
-        callbackGeneration &+= 1
-        resetLocked()
+        deviceHealth = [:]
+        terminateGestureLocked(reason: "device rediscovery")
         stateLock.unlock()
 
-        queueForRetirement(oldDevices, unregister: unregister)
+        queueForRetirement(oldDevices, health: health, unregister: unregister)
         Self.log("rediscovering trackpad devices (\(oldDevices.count) retired)")
         _ = start()
     }
 
     private func queueForRetirement(
-        _ devicesToRetire: [UnsafeMutableRawPointer], unregister: UnregisterCallback?
+        _ devicesToRetire: [UnsafeMutableRawPointer],
+        health: [UnsafeMutableRawPointer: DeviceHealth],
+        unregister: UnregisterCallback?
     ) {
-        let now = DispatchTime.now().uptimeNanoseconds
         for device in devicesToRetire {
-            unregister?(device, Self.callback)
+            guard let registration = health[device]?.registration else { continue }
+            // Revoke callback admission first. Callbacks already admitted retain the
+            // old epoch and remain counted until they return, even while awaiting a lock.
             Self.registryLock.lock()
-            Self.owners.removeValue(forKey: device)
+            if Self.owners[device] === registration {
+                Self.owners.removeValue(forKey: device)
+            }
             Self.registryLock.unlock()
+            let unregisterStarted = DispatchTime.now().uptimeNanoseconds
+            unregister?(device, Self.callback)
+            // Each device gets a full quiet interval AFTER its own unregister returns.
+            let unregisteredAt = DispatchTime.now().uptimeNanoseconds
+            stateLock.lock()
+            retiringDevices.append(RetiringDevice(
+                device: device, registration: registration, unregisteredAtNanos: unregisteredAt
+            ))
+            stateLock.unlock()
+            Self.log("queued retirement device=\(device) epoch=\(registration.epoch) unregisterMs=\((unregisteredAt - unregisterStarted) / 1_000_000) quietDelay=2s")
         }
-        stateLock.lock()
-        retiringDevices.append(contentsOf: devicesToRetire.map {
-            RetiringDevice(device: $0, unregisteredAtNanos: now)
-        })
-        stateLock.unlock()
     }
 
-    /// Stop queued devices whose callback has long finished. Called every second
-    /// by the availability poll — including while monitoring is disabled, so a
-    /// disable that caught live frames still retires its devices.
     private func drainRetiringDevices() {
         stateLock.lock()
         let now = DispatchTime.now().uptimeNanoseconds
-        let due = retiringDevices.filter { now &- $0.unregisteredAtNanos >= Self.retirementDelayNanos }
-        retiringDevices.removeAll { now &- $0.unregisteredAtNanos >= Self.retirementDelayNanos }
+        var due: [RetiringDevice] = []
+        var waiting: [(UnsafeMutableRawPointer, UInt, Int)] = []
+        Self.registryLock.lock()
+        retiringDevices.removeAll { entry in
+            guard now >= entry.unregisteredAtNanos,
+                  now - entry.unregisteredAtNanos >= Self.retirementDelayNanos else { return false }
+            guard entry.registration.inFlight == 0 else {
+                waiting.append((entry.device, entry.registration.epoch, entry.registration.inFlight))
+                return false
+            }
+            due.append(entry)
+            return true
+        }
+        Self.registryLock.unlock()
         let stopDevice = stopDeviceCallback
         stateLock.unlock()
 
-        for entry in due {
-            stopDevice?(entry.device)
+        for (device, epoch, count) in waiting {
+            Self.log("retirement waiting device=\(device) epoch=\(epoch) inFlight=\(count)")
         }
-        if !due.isEmpty {
-            Self.log("retired \(due.count) stale device object(s)")
+        for entry in due {
+            Self.log("stopping retired device=\(entry.device) epoch=\(entry.registration.epoch) quietMs=\((now - entry.unregisteredAtNanos) / 1_000_000)")
+            stopDevice?(entry.device)
+            Self.log("stopped retired device=\(entry.device) epoch=\(entry.registration.epoch)")
         }
     }
 
-    /// Periodic self-check: if no contact frame has arrived for a while, the
-    /// registration has gone stale and is rebuilt on fresh devices. A
-    /// three-finger swipe produces no observable events at all — no scrolling,
-    /// no pointer movement, no drag — so once the stream has delivered frames,
-    /// recovery runs on its spacing alone; only a never-delivered stream (dead
-    /// from launch, mouse-only desktops) still requires evidence of input.
+    /// Every discovered device, including a never-delivered registration, can
+    /// trigger recovery. Mouse events cannot tell us whether a three-finger swipe
+    /// was attempted. Full rediscovery shares a capped retry budget across devices.
     func performLivenessCheck() {
         drainRetiringDevices()
 
+        stateLock.lock()
         let now = DispatchTime.now().uptimeNanoseconds
-        stateLock.lock()
-        guard framework != nil else {
+        guard framework != nil, !deviceHealth.isEmpty else {
             stateLock.unlock()
             return
         }
-        // A stream can be dead from launch: no frame has ever arrived, so the start
-        // time anchors the check instead of the last-frame time.
-        let reference = lastFrameUptime != 0 ? lastFrameUptime : startedAtUptime
-        // `now` was sampled before the MT thread could stamp a newer frame — skip
-        // this check rather than underflowing on the age comparison.
-        guard reference != 0, now >= reference else {
+        let stale = deviceHealth.compactMap { device, health -> (UnsafeMutableRawPointer, UInt64)? in
+            guard let age = health.frameAge(at: now), age > Self.livenessThresholdNanos else { return nil }
+            return (device, age)
+        }
+        guard !stale.isEmpty else {
             stateLock.unlock()
             return
         }
-        let frameAge = now &- reference
-        // A gesture is only "in progress" while its frames keep flowing. When the
-        // stream dies mid-gesture — which a three-finger swipe tends to do — the
-        // bound tracking state would otherwise block every future check.
-        if frameAge > Self.livenessThresholdNanos, trackingDevice != nil || active {
-            Self.log("abandoning gesture state, stream silent for \(frameAge / 1_000_000_000)s")
-            resetLocked()
-        }
-        guard trackingDevice == nil, !active else {
+        if let trackingDevice,
+           let age = deviceHealth[trackingDevice]?.frameAge(at: now),
+           age <= Self.livenessThresholdNanos {
             stateLock.unlock()
             return
         }
-        let hasDelivered = lastFrameUptime != 0
-        let restarts = consecutiveRestarts
-        stateLock.unlock()
-        guard frameAge > Self.livenessThresholdNanos else { return }
-
-        let spacing = min(
-            Self.baseRestartSpacingNanos << UInt64(min(Int(restarts), 4)),
-            Self.maxRestartSpacingNanos
-        )
-        guard lastRestartUptime == 0 || now &- lastRestartUptime > spacing else { return }
-
-        let inputActive = (inputIdleSecondsOverride?() ?? Self.systemInputIdleSeconds())
-            < Double(Self.livenessThresholdNanos) / 1_000_000_000
-        guard inputActive || hasDelivered else { return }
-
-        stateLock.lock()
+        // Unwind a dead session immediately, even if another rebuild is in backoff.
+        if trackingDevice != nil || active || scrollSuppressionRequested {
+            terminateGestureLocked(reason: "bound device stream stale")
+        }
+        let exponent = consecutiveRestarts == 0 ? 0 : min(consecutiveRestarts - 1, 4)
+        let spacing = min(Self.baseRestartSpacingNanos << UInt64(exponent), Self.maxRestartSpacingNanos)
+        guard lastRestartUptime == 0 || (now >= lastRestartUptime && now - lastRestartUptime > spacing) else {
+            stateLock.unlock()
+            return
+        }
         lastRestartUptime = now
         consecutiveRestarts &+= 1
+        let attempt = consecutiveRestarts
+        let diagnostics = stale.map { device, age in
+            "device=\(device) epoch=\(deviceHealth[device]!.registration.epoch) age=\(age / 1_000_000_000)s delivered=\(deviceHealth[device]!.lastFrameUptime != 0)"
+        }.joined(separator: "; ")
         stateLock.unlock()
-        Self.log(String(
-            format: "contact stream silent for %.0fs — rediscovering devices",
-            Double(frameAge) / 1_000_000_000
-        ))
+        Self.log("stale streams: \(diagnostics); recoveryAttempt=\(attempt) retrySpacing=\(spacing / 1_000_000_000)s")
         if let restart = livenessRestart {
             restart()
         } else {
@@ -382,26 +451,39 @@ final class TrackpadGestureManager {
         }
     }
 
-    private static func systemInputIdleSeconds() -> Double {
-        [
-            CGEventType.scrollWheel,      // two-finger scrolling
-            CGEventType.mouseMoved,       // pointer movement
-            CGEventType.leftMouseDragged
-        ]
-        .map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }
-        .min() ?? .infinity
-    }
-
-    private func handle(device: UnsafeMutableRawPointer, touches: UnsafeMutablePointer<MTTouch>?, count: Int) {
+    private func handle(
+        device: UnsafeMutableRawPointer, registration: DeviceRegistration,
+        touches: UnsafeMutablePointer<MTTouch>?, count: Int
+    ) {
         stateLock.lock()
-        guard framework != nil else {
+        guard framework != nil, var health = deviceHealth[device],
+              health.registration === registration else {
             stateLock.unlock()
+            Self.log("ignored obsolete frame device=\(device) epoch=\(registration.epoch)")
             return
         }
-        lastFrameUptime = DispatchTime.now().uptimeNanoseconds
-        consecutiveRestarts = 0
-        if count > 0 {
-            Self.throttledFrameLog(count, tracking: trackingDevice != nil, active: active, cancelled: cancelledUntilRelease)
+        let now = DispatchTime.now().uptimeNanoseconds
+        let firstFrame = health.lastFrameUptime == 0
+        health.lastFrameUptime = now
+        let heartbeat = count > 0 && now >= health.lastFrameLogUptime
+            && now - health.lastFrameLogUptime > 1_000_000_000
+        if heartbeat { health.lastFrameLogUptime = now }
+        deviceHealth[device] = health
+        // A busy peer must not repeatedly reset retries for a device that has
+        // never recovered. Declare the new registration set healthy only once
+        // every device has delivered a frame.
+        if deviceHealth.values.allSatisfy({ $0.lastFrameUptime != 0 }) {
+            if consecutiveRestarts != 0 {
+                Self.log("all registered devices delivered frames; recovery backoff reset")
+            }
+            consecutiveRestarts = 0
+            lastRestartUptime = 0
+        }
+        if firstFrame {
+            Self.log("first frame device=\(device) epoch=\(registration.epoch) count=\(count)")
+        }
+        if heartbeat {
+            Self.dbgLog("frames: device=\(device) epoch=\(registration.epoch) count=\(count) tracking=\(trackingDevice == device) active=\(active) cancelled=\(cancelledUntilRelease)")
         }
         if count == 0 {
             let shouldCommit = active
@@ -533,8 +615,12 @@ final class TrackpadGestureManager {
         }
     }
 
-    private func resetLocked() {
-        setScrollSuppressionLocked(false)
+    private func resetLocked(notifyScrollSuppression: Bool = true) {
+        if notifyScrollSuppression {
+            setScrollSuppressionLocked(false)
+        } else {
+            scrollSuppressionRequested = false
+        }
         trackingDevice = nil
         trackedTouchIDs = []
         needsTouchRebind = false
@@ -553,26 +639,32 @@ final class TrackpadGestureManager {
     /// File-based diagnostics: NSLog does not surface in the unified log for this
     /// app, and gesture failures have been invisible without this record. The pid
     /// separates app noise from regression-test noise sharing the file.
+    private static let logLock = NSLock()
     static func dbgLog(_ message: String) {
         let line = "\(Date()) [pid \(ProcessInfo.processInfo.processIdentifier)] trackpad \(message)\n"
-        if let data = line.data(using: .utf8) {
-            let path = "/tmp/switch-gesture.log" as NSString
-            if let fh = FileHandle(forWritingAtPath: path as String) {
-                fh.seekToEndOfFile()
-                fh.write(data)
-                fh.closeFile()
-            } else {
-                try? data.write(to: URL(fileURLWithPath: path as String))
+        guard let data = line.data(using: .utf8) else { return }
+        logLock.lock()
+        defer { logLock.unlock() }
+        // O_APPEND also prevents the app and standalone probes from overwriting
+        // one another's lines when they share this diagnostic file.
+        let fd = open("/tmp/switch-gesture.log", O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if written > 0 { offset += written }
+                else if written < 0 && errno == EINTR { continue }
+                else { break }
             }
         }
     }
 
-    private static var lastFrameLogUptime: UInt64 = 0
-    private static func throttledFrameLog(_ count: Int, tracking: Bool, active: Bool, cancelled: Bool) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        guard now &- lastFrameLogUptime > 1_000_000_000 else { return }
-        lastFrameLogUptime = now
-        dbgLog("frames: count=\(count) tracking=\(tracking) active=\(active) cancelled=\(cancelled)")
+    private static var retainedDeviceCount: Int {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        return keepAliveDevices.count
     }
 
     private func symbol<T>(_ name: String, in handle: UnsafeMutableRawPointer) -> T? {

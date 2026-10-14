@@ -1,7 +1,13 @@
 import AppKit
+import Darwin
 
 func drainRegressionEvents() {
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+}
+
+func drainRegressionEvents(until condition: () -> Bool, timeout: TimeInterval = 2) {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat { drainRegressionEvents() } while !condition() && Date() < deadline
 }
 
 func regressionWindows(_ count: Int) -> [WindowInfo] {
@@ -14,6 +20,7 @@ func regressionWindows(_ count: Int) -> [WindowInfo] {
 @main
 struct RegressionMain {
     @MainActor static func main() {
+        setbuf(stdout, nil)
         _ = NSApplication.shared
         // The standalone executable has its own unique defaults domain, separate from Switch.app.
         let domain = ProcessInfo.processInfo.processName

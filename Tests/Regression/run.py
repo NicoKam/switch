@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile the application sources with regression extensions; no Xcode project required."""
 
+import os
 import platform
 import subprocess
 import tempfile
@@ -13,6 +14,11 @@ def main():
     source = repo / "Sources" / "Switch"
     with tempfile.TemporaryDirectory(prefix="switch-regressions-") as directory:
         output = Path(directory)
+        mock_library = output / "FakeMultitouchSupport.dylib"
+        subprocess.run([
+            "xcrun", "swiftc", "-swift-version", "5", "-emit-library",
+            str(tests / "FakeMultitouchSupport.swift"), "-o", str(mock_library),
+        ], check=True)
         swift_sources = []
         for original in sorted(source.glob("*.swift")):
             if original.name == "SwitchApp.swift":
@@ -40,7 +46,9 @@ def main():
             "-o", str(executable),
         ], check=True)
         try:
-            subprocess.run([str(executable)], check=True)
+            subprocess.run([str(executable)], check=True, env={
+                **os.environ, "SWITCH_REGRESSION_MT_LIBRARY": str(mock_library),
+            })
         finally:
             subprocess.run(["defaults", "delete", executable.name],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
