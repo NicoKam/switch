@@ -37,13 +37,13 @@ final class SwitchPreferences: ObservableObject {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .system: return "System"
-            case .rose: return "Rose"
-            case .blue: return "Blue"
-            case .mint: return "Mint"
-            case .peach: return "Peach"
-            case .lavender: return "Lavender"
-            case .monochrome: return "Mono"
+            case .system: return L10n.string("System")
+            case .rose: return L10n.string("Rose")
+            case .blue: return L10n.string("Blue")
+            case .mint: return L10n.string("Mint")
+            case .peach: return L10n.string("Peach")
+            case .lavender: return L10n.string("Lavender")
+            case .monochrome: return L10n.string("Mono")
             }
         }
         var color: Color {
@@ -64,9 +64,9 @@ final class SwitchPreferences: ObservableObject {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .system: return "System"
-            case .light: return "Light"
-            case .dark: return "Dark"
+            case .system: return L10n.string("System")
+            case .light: return L10n.string("Light")
+            case .dark: return L10n.string("Dark")
             }
         }
         var nsAppearance: NSAppearance? {
@@ -83,9 +83,9 @@ final class SwitchPreferences: ObservableObject {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .mouse: return "Mouse"
-            case .active: return "Active"
-            case .primary: return "Primary"
+            case .mouse: return L10n.string("Mouse")
+            case .active: return L10n.string("Active")
+            case .primary: return L10n.string("Primary")
             }
         }
     }
@@ -95,9 +95,9 @@ final class SwitchPreferences: ObservableObject {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .light: return "Light"
-            case .medium: return "Medium"
-            case .heavy: return "Heavy"
+            case .light: return L10n.string("Light")
+            case .medium: return L10n.string("Medium")
+            case .heavy: return L10n.string("Heavy")
             }
         }
         var material: Material {
@@ -126,6 +126,10 @@ final class SwitchPreferences: ObservableObject {
 
     @Published var appearance: Appearance {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: appearanceKey) }
+    }
+
+    @Published var language: AppLanguage {
+        didSet { UserDefaults.standard.set(language.rawValue, forKey: L10n.languageKey) }
     }
 
     @Published var moveCursorToWindow: Bool {
@@ -321,6 +325,7 @@ final class SwitchPreferences: ObservableObject {
     private init() {
         accent = AccentChoice(rawValue: UserDefaults.standard.string(forKey: accentKey) ?? "") ?? .system
         appearance = Appearance(rawValue: UserDefaults.standard.string(forKey: appearanceKey) ?? "") ?? .system
+        language = AppLanguage(rawValue: UserDefaults.standard.string(forKey: L10n.languageKey) ?? "") ?? .system
         moveCursorToWindow = UserDefaults.standard.bool(forKey: SwitchPreferences.moveCursorToWindowKey)
         backgroundBlur = BackgroundBlur(rawValue: UserDefaults.standard.string(forKey: backgroundBlurKey) ?? "") ?? .light
         showTitleFirst = UserDefaults.standard.bool(forKey: showTitleFirstKey)

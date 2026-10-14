@@ -161,10 +161,10 @@ enum HotkeyValidator {
         let mask: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
         let cleaned = flags.intersection(mask)
         if cleaned.intersection([.maskCommand, .maskAlternate, .maskControl]).rawValue == 0 {
-            return "Needs at least one modifier (⌘, ⌥, or ⌃)."
+            return L10n.string("Needs at least one modifier (⌘, ⌥, or ⌃).")
         }
         for (rk, rf) in reserved where rk == keyCode && rf == cleaned {
-            return "That combo is reserved by macOS or common apps."
+            return L10n.string("That combo is reserved by macOS or common apps.")
         }
         return nil
     }

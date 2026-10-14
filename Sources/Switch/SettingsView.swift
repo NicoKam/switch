@@ -63,11 +63,11 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .general: return "General"
-        case .picker: return "Picker"
-        case .permissions: return "Permissions"
-        case .appearance: return "Appearance"
-        case .about: return "About"
+        case .general: return L10n.string("General")
+        case .picker: return L10n.string("Picker")
+        case .permissions: return L10n.string("Permissions")
+        case .appearance: return L10n.string("Appearance")
+        case .about: return L10n.string("About")
         }
     }
 }
@@ -77,6 +77,7 @@ struct SettingsView: View {
     @ObservedObject private var prefs = SwitchPreferences.shared
     @State private var rejectMessage: String?
     @State private var tab: SettingsTab = .general
+    @State private var hoveredTab: SettingsTab?
     @State private var draggedApp: String?
     @State private var openWindows: [WindowInfo] = []
 
@@ -96,6 +97,8 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: 500, height: 460)
+        .environment(\.locale, prefs.language.locale)
+        .id(prefs.language)
         .onAppear { model.refresh() }
     }
 
@@ -107,17 +110,29 @@ struct SettingsView: View {
                 } label: {
                     Text(t.label)
                         .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .frame(maxWidth: .infinity)
                         .foregroundStyle(tab == t ? prefs.accent.color : .secondary)
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, 8)
                         .padding(.vertical, 7)
                         .background(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(tab == t ? prefs.accent.color.opacity(0.14) : Color.clear)
+                                .fill(
+                                    tab == t
+                                        ? prefs.accent.color.opacity(0.14)
+                                        : hoveredTab == t ? Color.primary.opacity(0.06) : Color.clear
+                                )
                         )
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    hoveredTab = hovering ? t : (hoveredTab == t ? nil : hoveredTab)
+                }
             }
-            Spacer()
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -301,8 +316,8 @@ struct SettingsView: View {
                         Divider().opacity(0.4)
                         row(title: "Columns",
                             detail: prefs.automaticGridColumns
-                                ? "Used only when automatic columns are off."
-                                : "Number of columns in the grid view. \(prefs.gridColumns)") {
+                                ? L10n.string("Used only when automatic columns are off.")
+                                : L10n.format("Number of columns in the grid view. %d", prefs.gridColumns)) {
                             Slider(value: Binding(
                                 get: { Double(prefs.gridColumns) },
                                 set: { prefs.gridColumns = Int($0.rounded()) }
@@ -314,7 +329,7 @@ struct SettingsView: View {
                         }
                         Divider().opacity(0.4)
                         row(title: "Rows",
-                            detail: "Rows visible at once in the list view. \(prefs.maxListRows)") {
+                            detail: L10n.format("Rows visible at once in the list view. %d", prefs.maxListRows)) {
                             Slider(value: Binding(
                                 get: { Double(prefs.maxListRows) },
                                 set: { prefs.maxListRows = Int($0.rounded()) }
@@ -324,14 +339,14 @@ struct SettingsView: View {
                         }
                         Divider().opacity(0.4)
                         row(title: "Thumbnail size",
-                            detail: "Overall picker size. \(Int(prefs.thumbnailHeight))pt") {
+                            detail: L10n.format("Overall picker size. %dpt", Int(prefs.thumbnailHeight))) {
                             Slider(value: $prefs.thumbnailHeight, in: 80...300, step: 5)
                                 .frame(width: 140)
                                 .tint(prefs.accent.color)
                         }
                         Divider().opacity(0.4)
                         row(title: "App icon size",
-                            detail: "Size of the app icon on each tile and list row. \(Int(prefs.appIconSize))pt") {
+                            detail: L10n.format("Size of the app icon on each tile and list row. %dpt", Int(prefs.appIconSize))) {
                             Slider(value: $prefs.appIconSize, in: 20...48, step: 2)
                                 .frame(width: 140)
                                 .tint(prefs.accent.color)
@@ -372,7 +387,7 @@ struct SettingsView: View {
         section("Advanced") {
             VStack(spacing: 0) {
                 row(title: "Picker activation delay",
-                    detail: "Hold the hotkey this long before the picker appears. A quick tap switches to your previous window without showing it. \(Int(prefs.pickerActivationDelay))ms") {
+                    detail: L10n.format("Hold the hotkey this long before the picker appears. A quick tap switches to your previous window without showing it. %dms", Int(prefs.pickerActivationDelay))) {
                     Slider(value: $prefs.pickerActivationDelay, in: 0...300, step: 10)
                         .frame(width: 140)
                         .tint(prefs.accent.color)
@@ -660,6 +675,23 @@ struct SettingsView: View {
     private var appearanceTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
+                section("Language") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker("", selection: $prefs.language) {
+                            ForEach(AppLanguage.allCases) { language in
+                                Text(language.label).tag(language)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        Text("Follow the system language, or choose a language for Switch.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(14)
+                    .background(rowBackground)
+                }
+
                 section("Accent") {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(spacing: 14) {
@@ -739,7 +771,7 @@ struct SettingsView: View {
                 Circle()
                     .fill(prefs.accent.color)
                     .frame(width: 5, height: 5)
-                Text(title.uppercased())
+                Text(L10n.string(title).uppercased())
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .tracking(1.4)
                     .foregroundStyle(.secondary)
@@ -751,8 +783,8 @@ struct SettingsView: View {
     private func row<Trailing: View>(title: String, detail: String, @ViewBuilder trailing: () -> Trailing) -> some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.system(size: 13, weight: .medium))
-                Text(detail)
+                Text(L10n.string(title)).font(.system(size: 13, weight: .medium))
+                Text(L10n.string(detail))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -775,7 +807,7 @@ struct SettingsView: View {
     private func hotkeyRow(_ label: String, rows: [(String, HotkeyConfig.Slot)], detail: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 12) {
-                Text(label)
+                Text(L10n.string(label))
                     .font(.system(size: 13, weight: .medium))
                     .frame(width: 100, alignment: .leading)
                 VStack(alignment: .leading, spacing: 6) {
@@ -786,7 +818,7 @@ struct SettingsView: View {
                 Spacer()
             }
             if let detail {
-                Text(detail)
+                Text(L10n.string(detail))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .padding(.leading, 112)
@@ -796,7 +828,7 @@ struct SettingsView: View {
 
     private func hotkeyBindingRow(label: String, slot: HotkeyConfig.Slot) -> some View {
         HStack(spacing: 8) {
-            Text(label)
+            Text(L10n.string(label))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(width: 76, alignment: .leading)
@@ -804,7 +836,7 @@ struct SettingsView: View {
                 initialBinding: model.bindings[slot] ?? HotkeyBinding(keyCode: 0, modifiersRaw: 0),
                 onCapture: { applyHotkey($0, to: slot) },
                 accent: prefs.accent.color,
-                placeholder: "Not set"
+                placeholder: L10n.string("Not set")
             )
             .frame(width: 150, height: 28)
             if model.bindings[slot] != nil {
@@ -813,7 +845,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Clear \(label.lowercased()) shortcut")
+                .help(L10n.format("Clear %@ shortcut", L10n.string(label).lowercased()))
             }
         }
         .frame(height: 28)
@@ -847,7 +879,7 @@ struct SettingsView: View {
         if let msg = HotkeyValidator.reject(keyCode: b.keyCode, flags: b.cgFlags) {
             rejectMessage = msg
         } else if model.bindings.contains(where: { $0.key != slot && $0.value.conflicts(with: b) }) {
-            rejectMessage = "That shortcut is already assigned."
+            rejectMessage = L10n.string("That shortcut is already assigned.")
         } else {
             rejectMessage = nil
             model.update(slot, b)
@@ -891,8 +923,8 @@ struct PermissionsTabView: View {
                 .font(.system(size: 18))
                 .foregroundStyle(granted ? Color.green : Color.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .medium))
-                Text(detail).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(L10n.string(title)).font(.system(size: 13, weight: .medium))
+                Text(L10n.string(detail)).font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
             if !granted {
@@ -1066,7 +1098,7 @@ final class KeyRecorderNSView: NSView {
 
     private func redraw() {
         if recording {
-            label.stringValue = "Press a key…"
+            label.stringValue = L10n.string("Press a key…")
             label.textColor = .secondaryLabelColor
             layer?.borderColor = accentNSColor.cgColor
             layer?.backgroundColor = accentNSColor.withAlphaComponent(0.10).cgColor
