@@ -132,16 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { NSApp.appearance = $0.nsAppearance }
             .store(in: &cancellables)
         observePickerLayout(model: model, window: window)
-        SwitchPreferences.shared.$language
-            .dropFirst()
-            .sink { [weak self] _ in
-                self?.statusBar?.refreshLocalization()
-                MainActor.assumeIsolated {
-                    SettingsWindow.shared.refreshLocalization()
-                    AboutWindow.shared.refreshLocalization()
-                }
-            }
-            .store(in: &cancellables)
+        observeLocalization()
         SwitchPreferences.shared.$showThumbnails
             .dropFirst()
             .receive(on: DispatchQueue.main)
@@ -422,6 +413,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !focusTrackerStarted else { return }
         focusTracker?.start()
         focusTrackerStarted = true
+    }
+
+    @MainActor private func observeLocalization() {
+        SwitchPreferences.shared.$language
+            .dropFirst()
+            // @Published emits before didSet persists the language used by L10n.
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.statusBar?.refreshLocalization()
+                    SettingsWindow.shared.refreshLocalization()
+                    AboutWindow.shared.refreshLocalization()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     @objc private func handleCheckForUpdates() {

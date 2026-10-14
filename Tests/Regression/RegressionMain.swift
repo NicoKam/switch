@@ -37,6 +37,7 @@ struct RegressionMain {
         prefs.threeFingerSwitching = false
 
         L10n.runRegressionTests()
+        AppDelegate.runLocalizationRegressionTests()
         TrackpadGestureManager.runRegressionTests()
         SwitchModel.runRegressionTests()
         HotkeyManager.runRegressionTests()

@@ -1,4 +1,29 @@
 extension AppDelegate {
+    @MainActor static func runLocalizationRegressionTests() {
+        let prefs = SwitchPreferences.shared
+        let language = prefs.language
+        let hidden = prefs.hideMenuBarIcon
+        prefs.language = .english
+        prefs.hideMenuBarIcon = true
+        let delegate = AppDelegate()
+        let status = StatusBarController()
+        delegate.statusBar = status
+        delegate.observeLocalization()
+        defer {
+            status.regressionRemoveItem()
+            prefs.language = language
+            prefs.hideMenuBarIcon = hidden
+        }
+        prefs.language = .simplifiedChinese
+        drainRegressionEvents(until: { status.regressionMenuTitles().contains("设置…") })
+        precondition(status.regressionMenuTitles().contains("设置…"), "AppKit menu read the language before didSet persisted it")
+        precondition(status.regressionMenuTitles().contains("关于 Switch"))
+        prefs.language = .english
+        drainRegressionEvents(until: { status.regressionMenuTitles().contains("Settings…") })
+        precondition(status.regressionMenuTitles().contains("Settings…"), "AppKit menu retained the previous language")
+        print("PASS actual AppKit menu refresh after English/Chinese preference changes")
+    }
+
     @MainActor static func runRegressionTests() {
         let prefs = SwitchPreferences.shared
         prefs.verticalList = false
