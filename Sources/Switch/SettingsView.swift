@@ -186,9 +186,18 @@ struct SettingsView: View {
                 }
 
                 section("Updates") {
-                    toggleRow("Check for updates automatically",
-                              "Look for new versions in the background and offer to install them. Turn off if you update through Homebrew.",
-                              Binding(get: { model.autoUpdateCheck }, set: { model.setAutoUpdateCheck($0) }))
+                    if BuildInfo.isFork {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(L10n.string("Update this fork by pulling this repository and rebuilding the app."))
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            Link(L10n.string("Build and update instructions"), destination: BuildInfo.forkBuildURL)
+                        }
+                    } else {
+                        toggleRow("Check for updates automatically",
+                                  "Look for new versions in the background and offer to install them. Turn off if you update through Homebrew.",
+                                  Binding(get: { model.autoUpdateCheck }, set: { model.setAutoUpdateCheck($0) }))
+                    }
                 }
 
                 section("Switch") {

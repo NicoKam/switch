@@ -36,10 +36,11 @@ struct RegressionMain {
         prefs.pinnedBundleIDs = []
         prefs.threeFingerSwitching = false
 
+        L10n.runRegressionTests()
         TrackpadGestureManager.runRegressionTests()
         SwitchModel.runRegressionTests()
         HotkeyManager.runRegressionTests()
         AppDelegate.runRegressionTests()
-        print("All gesture, navigation, scroll, session and layout regressions passed.")
+        print("All localization, gesture, navigation, scroll, session and layout regressions passed.")
     }
 }

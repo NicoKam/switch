@@ -3,6 +3,8 @@
 
 import os
 import platform
+import plistlib
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -36,7 +38,24 @@ def main():
             "xcrun", "clang", "-c", "-fobjc-arc", "-mmacosx-version-min=14.0",
             str(source / "ObjCException.m"), "-o", str(exception_object),
         ], check=True)
-        executable = output / ("SwitchRegressionTests-" + output.name)
+        executable_name = "SwitchRegressionTests-" + output.name
+        app = output / (executable_name + ".app")
+        executable = app / "Contents" / "MacOS" / executable_name
+        executable.parent.mkdir(parents=True)
+        resources = app / "Contents" / "Resources"
+        resources.mkdir()
+        for language in ("en", "zh-Hans"):
+            shutil.copytree(source / "Resources" / (language + ".lproj"), resources / (language + ".lproj"))
+        with (app / "Contents" / "Info.plist").open("wb") as handle:
+            plistlib.dump({
+                "CFBundleIdentifier": executable_name,
+                "CFBundleExecutable": executable_name,
+                "CFBundlePackageType": "APPL",
+                "CFBundleDevelopmentRegion": "en",
+                "CFBundleLocalizations": ["en", "zh-Hans"],
+                "SwitchForkBuild": True,
+                "LSUIElement": True,
+            }, handle)
         subprocess.run([
             "xcrun", "swiftc", "-swift-version", "5",
             "-target", f"{platform.machine()}-apple-macosx14.0",

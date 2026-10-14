@@ -96,7 +96,7 @@ struct AboutView: View {
 
             HStack(spacing: 8) {
                 AboutPill(title: "Website", url: "https://switch-dev.sanyamgarg.com")
-                AboutPill(title: "Source", url: "https://github.com/Sanyam-G/switch")
+                AboutPill(title: "Source", url: "https://github.com/NicoKam/switch")
                 AboutPill(title: "☕ Coffee", url: "https://www.paypal.com/paypalme/sanyamg0")
             }
 
@@ -104,7 +104,7 @@ struct AboutView: View {
                 AboutWindow.shared.dropLevelForDialog()
                 NotificationCenter.default.post(name: .switchCheckForUpdates, object: nil)
             } label: {
-                Text("Check for Updates")
+                Text(BuildInfo.isFork ? L10n.string("Build and update instructions") : L10n.string("Check for Updates"))
                     .font(.system(size: 11, weight: .medium))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
@@ -144,6 +144,9 @@ extension AboutWindow {
 }
 
 enum BuildInfo {
+    static var isFork: Bool { Bundle.main.infoDictionary?["SwitchForkBuild"] as? Bool == true }
+    static let forkBuildURL = URL(string: "https://github.com/NicoKam/switch#build-from-source")!
+
     static var versionLine: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"

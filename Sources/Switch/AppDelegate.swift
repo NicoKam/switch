@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updaterDelegate: nil,
         userDriverDelegate: self
     )
-    var sparkleUpdater: SPUUpdater? { updaterController.updater }
+    var sparkleUpdater: SPUUpdater? { BuildInfo.isFork ? nil : updaterController.updater }
     #endif
     private var model: SwitchModel?
     private var hotkey: HotkeyManager?
@@ -183,7 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: .switchCheckForUpdates, object: nil
         )
         #if canImport(Sparkle)
-        _ = updaterController
+        if !BuildInfo.isFork { _ = updaterController }
         #endif
         NotificationCenter.default.addObserver(
             forName: HotkeyConfig.didChangeNotification, object: nil, queue: .main
@@ -425,6 +425,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleCheckForUpdates() {
+        if BuildInfo.isFork {
+            NSWorkspace.shared.open(BuildInfo.forkBuildURL)
+            return
+        }
         #if canImport(Sparkle)
         updaterController.checkForUpdates(nil)
         #else

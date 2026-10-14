@@ -30,15 +30,12 @@
 	<true/>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Switch captures window thumbnails so you can see what you're switching to.</string>
-	<key>SUAutomaticallyUpdate</key>
-	<false/>
-	<key>SUEnableAutomaticChecks</key>
+	<key>SwitchForkBuild</key>
 	<true/>
-	<key>SUFeedURL</key>
-	<string>https://switch-dev.sanyamgarg.com/appcast.xml</string>
-	<key>SUPublicEDKey</key>
-	<string>CUEAR32bfkJ9r4M3C9Nig6Lvd+5qGEya51Dp/t8oTyk=</string>
-	<key>SUScheduledCheckInterval</key>
-	<integer>86400</integer>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>zh-Hans</string>
+	</array>
 </dict>
 </plist>

@@ -1,4 +1,6 @@
 "Language" = "语言";
+"Build and update instructions" = "构建与更新说明";
+"Update this fork by pulling this repository and rebuilding the app." = "拉取本仓库最新代码并重新构建，以更新此分支版本。";
 "Follow System" = "跟随系统";
 "Follow the system language, or choose a language for Switch." = "跟随系统语言，或单独为 Switch 选择语言。";
 "General" = "通用";
@@ -38,6 +40,7 @@
 "Keyboard only" = "仅使用键盘";
 "Ignore mouse hover and click while the picker is open." = "切换器打开时忽略鼠标悬停和点击。";
 "Three-finger swipe" = "三指滑动";
+"Swipe horizontally to open the picker, then move in any direction to choose a window. Lift all three fingers to switch." = "水平滑动打开切换器，再向任意方向移动来选择窗口，抬起三指后完成切换。";
 "Swipe in any direction to choose a window, then lift all three fingers to switch." = "向任意方向滑动来选择窗口，抬起三指后完成切换。";
 "Reduce motion" = "减少动态效果";
 "Turn off picker fade, selection movement, and other switcher animations." = "关闭切换器淡入淡出、选中项移动及其他动画。";

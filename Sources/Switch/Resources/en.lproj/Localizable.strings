@@ -1,4 +1,6 @@
 "Language" = "Language";
+"Build and update instructions" = "Build and update instructions";
+"Update this fork by pulling this repository and rebuilding the app." = "Update this fork by pulling this repository and rebuilding the app.";
 "Follow System" = "Follow System";
 "Follow the system language, or choose a language for Switch." = "Follow the system language, or choose a language for Switch.";
 "General" = "General";
@@ -38,6 +40,7 @@
 "Keyboard only" = "Keyboard only";
 "Ignore mouse hover and click while the picker is open." = "Ignore mouse hover and click while the picker is open.";
 "Three-finger swipe" = "Three-finger swipe";
+"Swipe horizontally to open the picker, then move in any direction to choose a window. Lift all three fingers to switch." = "Swipe horizontally to open the picker, then move in any direction to choose a window. Lift all three fingers to switch.";
 "Swipe in any direction to choose a window, then lift all three fingers to switch." = "Swipe in any direction to choose a window, then lift all three fingers to switch.";
 "Reduce motion" = "Reduce motion";
 "Turn off picker fade, selection movement, and other switcher animations." = "Turn off picker fade, selection movement, and other switcher animations.";
