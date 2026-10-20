@@ -47,6 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingPresent: DispatchWorkItem?
     private var lastAvailabilityLog = ""
     private var cancellables: Set<AnyCancellable> = []
+    private var powerObserverTokens: [NSObjectProtocol] = []
+    private var powerNotificationCenter: NotificationCenter?
+
+    deinit {
+        if let center = powerNotificationCenter {
+            powerObserverTokens.forEach { center.removeObserver($0) }
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -204,14 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Sleep/wake can invalidate the contact-frame registration; rebuild eagerly.
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.restartTrackpadMonitoring()
-            }
-        }
+        observeSystemPowerChanges()
 
         // Watchdog: armed with no panel visible and none pending means the tap
         // is consuming keystrokes for a picker that doesn't exist (the "keyboard
@@ -304,6 +305,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor private var trackpadGestureAvailable: Bool {
+        trackpadGesture?.isSuspendedForSystemSleep != true && trackpadMonitoringRequested
+    }
+
+    @MainActor private var trackpadMonitoringRequested: Bool {
         SwitchPreferences.shared.threeFingerSwitching && !hotkeyRecording && requiredPermissionsGranted
     }
 
@@ -352,6 +357,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor private func updateTrackpadGestureAvailability() {
+        // DarkWake can run the poll before the user-facing wake notification.
+        // It must not reinstall callbacks or accumulate recovery failures then.
+        guard trackpadGesture?.isSuspendedForSystemSleep != true else { return }
         let available = trackpadGestureAvailable
         let summary = "availability: available=\(available) threeFinger=\(SwitchPreferences.shared.threeFingerSwitching) recording=\(hotkeyRecording) perms=\(requiredPermissionsGranted)"
         if summary != lastAvailabilityLog {
@@ -371,11 +379,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         trackpadGesture?.start()
     }
 
+    @MainActor private func observeSystemPowerChanges(center: NotificationCenter = NSWorkspace.shared.notificationCenter) {
+        guard powerObserverTokens.isEmpty else { return }
+        powerNotificationCenter = center
+        powerObserverTokens = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.suspendTrackpadForSystemSleep() }
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.restartTrackpadMonitoring() }
+            },
+        ]
+    }
+
+    @MainActor private func suspendTrackpadForSystemSleep() {
+        guard trackpadGesture?.suspendForSystemSleep() == true else { return }
+        invalidateTrackpadGestureSession()
+        cancelPendingPresent()
+        hotkey?.clearArmed()
+        model?.cancel()
+        window?.dismiss()
+    }
+
     @MainActor private func restartTrackpadMonitoring() {
-        guard trackpadGestureAvailable, let trackpadGesture, trackpadGesture.isRunning else { return }
-        // Sleep/wake can invalidate the device handles themselves, so a wake does a
-        // full re-discovery rather than re-registering the cached ones.
-        trackpadGesture.rediscoverDevices()
+        trackpadGesture?.resumeAfterSystemWake(monitoringEnabled: trackpadMonitoringRequested)
     }
 
     private func schedulePresent(window: SwitcherWindow) {

@@ -1,4 +1,47 @@
 extension AppDelegate {
+    @MainActor static func runSystemPowerRegressionTests() {
+        TrackpadGestureManager.withRegressionMultitouchLibrary {
+            let prefs = SwitchPreferences.shared
+            let original = prefs.threeFingerSwitching
+            defer { prefs.threeFingerSwitching = original }
+            prefs.threeFingerSwitching = true
+            let delegate = AppDelegate()
+            let manager = TrackpadGestureManager()
+            let model = SwitchModel()
+            let hotkey = HotkeyManager()
+            delegate.trackpadGesture = manager
+            delegate.model = model
+            delegate.hotkey = hotkey
+            delegate.window = SwitcherWindow(model: model)
+            let center = NotificationCenter()
+            delegate.observeSystemPowerChanges(center: center)
+            delegate.observeSystemPowerChanges(center: center)
+            precondition(delegate.powerObserverTokens.count == 2, "Install one observer per power event")
+            precondition(manager.start())
+            model.visible = true
+            delegate.trackpadGestureSessionActive = true
+            hotkey.setScrollSuppressed(true)
+            let pending = DispatchWorkItem { preconditionFailure("A sleeping picker must not be presented") }
+            delegate.pendingPresent = pending
+            center.post(name: NSWorkspace.willSleepNotification, object: nil)
+            center.post(name: NSWorkspace.willSleepNotification, object: nil)
+            precondition(manager.isSuspendedForSystemSleep && !manager.isRunning)
+            precondition(!model.visible && !delegate.trackpadGestureSessionActive)
+            precondition(!hotkey.regressionScrollIsSuppressed() && pending.isCancelled && delegate.pendingPresent == nil)
+            for _ in 0..<3 { delegate.updateTrackpadGestureAvailability(); manager.performLivenessCheck() }
+            precondition(!manager.isRunning && manager.consecutiveRestartsForRegression == 0)
+            prefs.threeFingerSwitching = false
+            center.post(name: NSWorkspace.didWakeNotification, object: nil)
+            center.post(name: NSWorkspace.didWakeNotification, object: nil)
+            precondition(!manager.isSuspendedForSystemSleep && !manager.isRunning, "Wake cannot enable a disabled preference")
+            delegate.updateTrackpadGestureAvailability()
+            precondition(!manager.isRunning)
+            manager.stop()
+            drainRegressionEvents()
+            print("PASS actual sleep/wake notification wiring, picker cancellation and disabled preference handling")
+        }
+    }
+
     @MainActor static func runLocalizationRegressionTests() {
         let prefs = SwitchPreferences.shared
         let language = prefs.language
@@ -58,8 +101,11 @@ extension AppDelegate {
         drainRegressionEvents(until: { model.gridColumnCount == 6 })
         precondition(model.gridColumnCount == 6, "Column changes must read defaults after didSet")
         SwitchPreferences.shared.automaticGridColumns = true
-        drainRegressionEvents(until: { model.gridColumnCount == GridLayoutMetrics.columns(itemCount: 8, screen: SwitcherWindow.pickerScreen()) })
-        precondition(model.gridColumnCount == GridLayoutMetrics.columns(itemCount: 8, screen: SwitcherWindow.pickerScreen()))
+        // The actual panel screen can differ from the pointer's screen on a
+        // multi-display desktop. Use the panel's target, as the resize observer does.
+        let expectedColumns = GridLayoutMetrics.columns(itemCount: 8, screen: window.screen ?? SwitcherWindow.pickerScreen())
+        drainRegressionEvents(until: { model.gridColumnCount == expectedColumns })
+        precondition(model.gridColumnCount == expectedColumns)
         SwitchPreferences.shared.gridColumns = 3
         SwitchPreferences.shared.automaticGridColumns = false
         drainRegressionEvents(until: { model.gridColumnCount == 3 })

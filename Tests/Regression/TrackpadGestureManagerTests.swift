@@ -1,4 +1,99 @@
 extension TrackpadGestureManager {
+    static func withRegressionMultitouchLibrary(_ body: () -> Void) {
+        let previous = libraryHandle
+        let path = ProcessInfo.processInfo.environment["SWITCH_REGRESSION_MT_LIBRARY"]!
+        libraryHandle = dlopen(path, RTLD_NOW)
+        precondition(libraryHandle != nil)
+        defer { libraryHandle = previous }
+        body()
+    }
+
+    static func runSystemPowerRegressionTests() {
+        withRegressionMultitouchLibrary {
+            let starts = unsafeBitCast(dlsym(libraryHandle!, "SwitchRegressionStartCount")!,
+                                       to: (@convention(c) () -> Int32).self)
+            let registers = unsafeBitCast(dlsym(libraryHandle!, "SwitchRegressionRegisterCount")!,
+                                          to: (@convention(c) () -> Int32).self)
+            let unregisters = unsafeBitCast(dlsym(libraryHandle!, "SwitchRegressionUnregisterCount")!,
+                                            to: (@convention(c) () -> Int32).self)
+            let stops = unsafeBitCast(dlsym(libraryHandle!, "SwitchRegressionStopCount")!,
+                                      to: (@convention(c) () -> Int32).self)
+            let setEmpty = unsafeBitCast(dlsym(libraryHandle!, "SwitchRegressionSetEmptyDiscovery")!,
+                                         to: (@convention(c) (Int32) -> Void).self)
+            defer { setEmpty(0) }
+            let manager = TrackpadGestureManager()
+            precondition(manager.start())
+            let started = starts(), registered = registers(), unregistered = unregisters(), stopped = stops()
+            let oldDevices = manager.devices
+            var finishes: [Bool] = []
+            manager.onFinish = { finishes.append($0) }
+            manager.regressionFrame([1, 2, 3], x: 0.5, device: oldDevices[0])
+            manager.regressionFrame([1, 2, 3], x: 0.55, device: oldDevices[0])
+            manager.consecutiveRestarts = 7
+            manager.lastRestartUptime = DispatchTime.now().uptimeNanoseconds
+            precondition(manager.suspendForSystemSleep())
+            precondition(!manager.suspendForSystemSleep(), "Repeated sleep must not retire a registration twice")
+            precondition(manager.isSuspendedForSystemSleep && !manager.isRunning)
+            precondition(unregisters() == unregistered + 2 && stops() == stopped)
+            for _ in 0..<4 {
+                precondition(!manager.start(), "Polling/DarkWake cannot restart suspended monitoring")
+                manager.performLivenessCheck()
+                manager.rediscoverDevices()
+            }
+            drainRegressionEvents()
+            precondition(finishes == [false], "Sleep cancels the old gesture once, without committing")
+            precondition(starts() == started && registers() == registered)
+            precondition(manager.consecutiveRestarts == 0 && manager.lastRestartUptime == 0)
+            manager.retiringDevices = manager.retiringDevices.map {
+                RetiringDevice(device: $0.device, registration: $0.registration,
+                               unregisteredAtNanos: DispatchTime.now().uptimeNanoseconds - 3_000_000_000)
+            }
+            manager.performLivenessCheck()
+            manager.performLivenessCheck()
+            precondition(stops() == stopped + 2, "Suspension still drains each retired device exactly once")
+
+            // Hardware may still be unavailable at the first wake attempt.
+            setEmpty(1)
+            precondition(manager.resumeAfterSystemWake(monitoringEnabled: true))
+            precondition(!manager.isSuspendedForSystemSleep && !manager.isRunning)
+            precondition(!manager.resumeAfterSystemWake(monitoringEnabled: true))
+            setEmpty(0)
+            precondition(manager.start(), "Polling must recover an empty first wake discovery")
+            let wakeDevices = manager.devices
+            for _ in 0..<4 {
+                precondition(manager.start())
+                precondition(!manager.resumeAfterSystemWake(monitoringEnabled: true))
+            }
+            precondition(manager.devices == wakeDevices && registers() == registered + 2 && starts() == started + 2,
+                         "Successful wake registration happens once despite duplicate notifications and polling")
+            for device in wakeDevices {
+                let health = manager.deviceHealth[device]!
+                manager.deviceHealth[device] = DeviceHealth(
+                    registration: health.registration,
+                    startedAtUptime: DispatchTime.now().uptimeNanoseconds - 31_000_000_000
+                )
+            }
+            manager.performLivenessCheck()
+            precondition(manager.devices != wakeDevices && manager.consecutiveRestarts == 1,
+                         "A zero-frame wake registration must retry at 30 seconds, without the previous 600s backoff")
+            precondition(manager.suspendForSystemSleep())
+            let beforeDisabledWake = starts()
+            precondition(manager.resumeAfterSystemWake(monitoringEnabled: false))
+            precondition(!manager.isRunning && starts() == beforeDisabledWake,
+                         "Wake must respect disabled gestures, recording and missing permissions")
+            precondition(manager.suspendForSystemSleep())
+            let beforeReadyWake = starts(), beforeReadyRegisters = registers()
+            precondition(manager.resumeAfterSystemWake(monitoringEnabled: true))
+            precondition(manager.isRunning && !manager.resumeAfterSystemWake(monitoringEnabled: true))
+            precondition(manager.start())
+            precondition(starts() == beforeReadyWake + 2 && registers() == beforeReadyRegisters + 2,
+                         "A ready trackpad registers once per wake, even when the poll and duplicate wake follow immediately")
+            manager.stop()
+            drainRegressionEvents()
+            print("PASS sleep suspension, duplicate wake isolation, empty discovery retry and fresh wake recovery budget")
+        }
+    }
+
     var cancelledUntilReleaseForRegression: Bool { cancelledUntilRelease }
     var runningForRegression: Bool { framework != nil }
     var consecutiveRestartsForRegression: UInt { consecutiveRestarts }

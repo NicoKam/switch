@@ -39,6 +39,8 @@ struct RegressionMain {
         L10n.runRegressionTests()
         AppDelegate.runLocalizationRegressionTests()
         TrackpadGestureManager.runRegressionTests()
+        TrackpadGestureManager.runSystemPowerRegressionTests()
+        AppDelegate.runSystemPowerRegressionTests()
         SwitchModel.runRegressionTests()
         HotkeyManager.runRegressionTests()
         AppDelegate.runRegressionTests()

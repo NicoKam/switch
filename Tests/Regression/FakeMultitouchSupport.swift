@@ -9,6 +9,9 @@ private var callbacks: [UnsafeMutableRawPointer: ContactCallback] = [:]
 private var emptyDiscovery = false
 private var unregisterDelay: Double = 0
 private var stoppedCount: Int32 = 0
+private var startedCount: Int32 = 0
+private var registeredCount: Int32 = 0
+private var unregisteredCount: Int32 = 0
 
 @_cdecl("MTDeviceCreateList")
 public func fakeCreateList() -> UnsafeMutableRawPointer? {
@@ -19,18 +22,20 @@ public func fakeCreateList() -> UnsafeMutableRawPointer? {
 @_cdecl("MTRegisterContactFrameCallback")
 public func fakeRegister(_ device: UnsafeMutableRawPointer?, _ callback: UnsafeMutableRawPointer?) {
     if let device, let callback {
+        registeredCount += 1
         callbacks[device] = unsafeBitCast(callback, to: ContactCallback.self)
     }
 }
 
 @_cdecl("MTUnregisterContactFrameCallback")
 public func fakeUnregister(_ device: UnsafeMutableRawPointer?, _ callback: UnsafeMutableRawPointer?) {
+    unregisteredCount += 1
     if let device { callbacks.removeValue(forKey: device) }
     if unregisterDelay > 0 { Thread.sleep(forTimeInterval: unregisterDelay) }
 }
 
 @_cdecl("MTDeviceStart")
-public func fakeStart(_ device: UnsafeMutableRawPointer?, _ mode: Int32) {}
+public func fakeStart(_ device: UnsafeMutableRawPointer?, _ mode: Int32) { startedCount += 1 }
 
 @_cdecl("MTDeviceStop")
 public func fakeStop(_ device: UnsafeMutableRawPointer?) { stoppedCount += 1 }
@@ -43,6 +48,15 @@ public func setUnregisterDelay(_ delay: Double) { unregisterDelay = delay }
 
 @_cdecl("SwitchRegressionStopCount")
 public func stopCount() -> Int32 { stoppedCount }
+
+@_cdecl("SwitchRegressionStartCount")
+public func startCount() -> Int32 { startedCount }
+
+@_cdecl("SwitchRegressionRegisterCount")
+public func registerCount() -> Int32 { registeredCount }
+
+@_cdecl("SwitchRegressionUnregisterCount")
+public func unregisterCount() -> Int32 { unregisteredCount }
 
 @_cdecl("SwitchRegressionEmitFrame")
 public func emitFrame(_ device: UnsafeMutableRawPointer?, _ touches: UnsafeMutableRawPointer?, _ count: Int32) {

@@ -62,6 +62,8 @@ The original keyboard workflow remains available: ⌘-Tab cycles windows, ⌥-` 
 
 Gestures use Apple's private MultitouchSupport framework. Its raw touch stream can stop silently, especially around sleep/wake; this fork detects and rebuilds registrations rather than claiming to fix the framework itself. Recovery is checked every second, considers a stream stale after roughly 30 seconds, and backs off repeated failed recoveries. Retired device objects intentionally retain a process-lifetime reference to avoid observed framework teardown crashes.
 
+Before system sleep, Switch unregisters touch callbacks and cancels any pending picker session. Polling during sleep / DarkWake cannot restart monitoring or increase the recovery backoff. On wake, the old backoff is cleared and monitoring starts once; duplicate power notifications do not duplicate registrations. If hardware is not yet available, the normal poll retries discovery. If a new registration still delivers no frames, the watchdog can retry after the 30-second stale threshold rather than inheriting a sleep-time ten-minute delay. Device retirement continues to use the quiet-period and in-flight callback safeguards.
+
 Diagnostics are appended to **`/tmp/switch-gesture.log`**. For a bug report, include the source commit from About, macOS version, trackpad type, reproduction steps and relevant log lines around the failure. Regression tests use a mock MultitouchSupport library; passing tests does not prove the private framework will stay alive on every Mac.
 
 ## Updating this fork

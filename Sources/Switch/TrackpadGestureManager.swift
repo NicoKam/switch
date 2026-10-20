@@ -155,6 +155,8 @@ final class TrackpadGestureManager {
     private var lastRestartUptime: UInt64 = 0
     private var consecutiveRestarts: UInt = 0
     private var lastStartFailureLog: String?
+    private var systemSleeping = false
+    private var sleepCycle: UInt = 0
     /// Regression hook: when set, replaces the rediscovery rebuild.
     var livenessRestart: (() -> Void)?
 
@@ -166,6 +168,56 @@ final class TrackpadGestureManager {
         stateLock.lock()
         defer { stateLock.unlock() }
         return framework != nil
+    }
+
+    var isSuspendedForSystemSleep: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return systemSleeping
+    }
+
+    /// Power notifications and lifecycle calls are serialized on the main thread.
+    /// Keep suspension separate from stop(): the permission poll also calls stop.
+    @discardableResult
+    func suspendForSystemSleep() -> Bool {
+        stateLock.lock()
+        guard !systemSleeping else {
+            stateLock.unlock()
+            Self.log("system sleep ignored: already suspended")
+            return false
+        }
+        systemSleeping = true
+        sleepCycle &+= 1
+        let cycle = sleepCycle
+        let previousAttempts = consecutiveRestarts
+        stateLock.unlock()
+        // Unregister immediately; retain the existing quiet-period/in-flight
+        // barrier before stopping each device. Never release the library/devices.
+        stop()
+        Self.log("system sleep: cycle=\(cycle) suspended=true previousAttempts=\(previousAttempts) backoffReset=true")
+        return true
+    }
+
+    @discardableResult
+    func resumeAfterSystemWake(monitoringEnabled: Bool) -> Bool {
+        stateLock.lock()
+        guard systemSleeping else {
+            stateLock.unlock()
+            Self.log("system wake ignored: no pending sleep")
+            return false
+        }
+        systemSleeping = false
+        lastRestartUptime = 0
+        consecutiveRestarts = 0
+        let cycle = sleepCycle
+        stateLock.unlock()
+        Self.log("system wake: cycle=\(cycle) monitoringEnabled=\(monitoringEnabled) backoffReset=true")
+        drainRetiringDevices()
+        if monitoringEnabled {
+            let started = start()
+            Self.log("system wake registration: cycle=\(cycle) started=\(started)")
+        }
+        return true
     }
 
     /// Discard queued input and wait for the current contacts to lift before recognizing another gesture.
@@ -183,6 +235,10 @@ final class TrackpadGestureManager {
     @discardableResult
     func start() -> Bool {
         stateLock.lock()
+        guard !systemSleeping else {
+            stateLock.unlock()
+            return false
+        }
         let frameworkLoaded = framework != nil
         let cachedDevices = devices
         stateLock.unlock()
