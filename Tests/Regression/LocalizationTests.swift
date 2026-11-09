@@ -12,6 +12,11 @@ extension L10n {
         precondition(string("Build and update instructions") == "构建与更新说明", "Fork update instructions not translated")
         precondition(format("Number of columns in the grid view. %d", 4) == "宫格视图的列数：4", "Chinese formatted string failed")
         precondition(prefs.appearance.label == "深色", "Preference labels did not follow Chinese")
+        precondition(string("Click only") == "仅点击选择")
+        precondition(string("Home row keys") == "主行键选择")
+        precondition(string("Pass-through apps") == "快捷键透传应用")
+        precondition(SwitchPreferences.AccentChoice.crimson.label == "绯红")
+        precondition(format("Width of the picker, independent of thumbnail size. %d%%", 125) == "切换器宽度，独立于缩略图大小：125%")
         prefs.language = .english
         precondition(language == .english)
         precondition(string("Three-finger swipe") == "Three-finger swipe", "Switching back to English retained Chinese")

@@ -161,3 +161,31 @@
 "Settings…" = "Settings…";
 "Updates not configured" = "Updates not configured";
 "This build doesn't include Sparkle. Visit switch-dev.sanyamgarg.com to download the latest." = "This build doesn't include Sparkle. Visit switch-dev.sanyamgarg.com to download the latest.";
+
+/* Upstream v0.3.18-v0.3.23 settings. */
+"Click only" = "Click only";
+"Ignore mouse hover while the picker is open. Click a window to pick it." = "Ignore mouse hover while the picker is open. Click a window to pick it.";
+"Use H J K L to move the selection. Turns off type to filter and home row keys." = "Use H J K L to move the selection. Turns off type to filter and home row keys.";
+"Home row keys" = "Home row keys";
+"Pick the first nine windows with A S D F G J K L ; as well as 1-9. Turns off type to filter and Vim navigation." = "Pick the first nine windows with A S D F G J K L ; as well as 1-9. Turns off type to filter and Vim navigation.";
+"Turn this on to filter windows by typing. Turns off Vim navigation and home row keys." = "Turn this on to filter windows by typing. Turns off Vim navigation and home row keys.";
+"Show key hints" = "Show key hints";
+"Label the first nine windows with the key that picks them." = "Label the first nine windows with the key that picks them.";
+"Panel width" = "Panel width";
+"Width of the picker, independent of thumbnail size. %d%%" = "Width of the picker, independent of thumbnail size. %d%%";
+"Height of each window preview. %dpt" = "Height of each window preview. %dpt";
+"Restore panel width, columns, rows, thumbnail size, and app icon size." = "Restore panel width, columns, rows, thumbnail size, and app icon size.";
+"Reverse with ⌘`" = "Reverse with ⌘`";
+"While the picker is open, ⌘` steps backward." = "While the picker is open, ⌘` steps backward.";
+"Include windows on other Spaces. Picking one takes you to it." = "Include windows on other Spaces. Picking one takes you to it.";
+"Pass-through apps" = "Pass-through apps";
+"Switch's hotkeys go to these apps while they're frontmost, e.g. a virtual machine or remote desktop." = "Switch's hotkeys go to these apps while they're frontmost, e.g. a virtual machine or remote desktop.";
+"No pass-through apps." = "No pass-through apps.";
+"Crimson" = "Crimson";
+"Orange" = "Orange";
+"Amber" = "Amber";
+"Green" = "Green";
+"Cyan" = "Cyan";
+"Cobalt" = "Cobalt";
+"Violet" = "Violet";
+"Magenta" = "Magenta";

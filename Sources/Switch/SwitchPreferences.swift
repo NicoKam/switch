@@ -10,10 +10,10 @@ enum GridLayoutMetrics {
         guard defaults.bool(forKey: SwitchPreferences.automaticGridColumnsKey), let screen else {
             return min(max(configured, 1), count)
         }
-        let thumb = CGFloat((defaults.object(forKey: SwitchPreferences.thumbnailHeightKey) as? Double)
-            ?? SwitchPreferences.defaultThumbnailHeight)
-        let scale = thumb / CGFloat(SwitchPreferences.defaultThumbnailHeight)
-        let preferredColumnWidth = max(150, 195 * scale)
+        let widthScale = CGFloat(SwitchPreferences.clampedPanelWidthScale(
+            defaults.object(forKey: SwitchPreferences.panelWidthScaleKey) as? Double
+        ))
+        let preferredColumnWidth = max(150, 195 * widthScale)
         let availableWidth = screen.visibleFrame.width * 0.92
         let horizontalPadding: CGFloat = 44
         let spacing: CGFloat = 14
@@ -29,12 +29,20 @@ final class SwitchPreferences: ObservableObject {
     nonisolated static let defaultAppIconSize = 32.0
     nonisolated static let defaultGridColumns = 4
     nonisolated static let defaultMaxListRows = 8
+    nonisolated static let defaultPanelWidthScale = 1.0
+    nonisolated static let minPanelWidthScale = 0.65  // 572pt grid, above its 560pt floor
+    nonisolated static let maxPanelWidthScale = 2.4  // covers the 300pt thumbnail maximum when migrating
+    nonisolated static let defaultGridPanelWidth = 880.0
+    nonisolated static let defaultListPanelWidth = 520.0
     nonisolated static let defaultPickerActivationDelay = 130.0
     nonisolated static let compactThumbnailHeight = 72.0
 
     enum AccentChoice: String, CaseIterable, Identifiable {
         case system, rose, blue, mint, peach, lavender, monochrome
+        case crimson, orange, amber, green, cyan, cobalt, violet, magenta
         var id: String { rawValue }
+        static let soft: [AccentChoice] = [.system, .rose, .blue, .mint, .peach, .lavender, .monochrome]
+        static let vivid: [AccentChoice] = [.crimson, .orange, .amber, .green, .cyan, .cobalt, .violet, .magenta]
         var label: String {
             switch self {
             case .system: return L10n.string("System")
@@ -44,6 +52,14 @@ final class SwitchPreferences: ObservableObject {
             case .peach: return L10n.string("Peach")
             case .lavender: return L10n.string("Lavender")
             case .monochrome: return L10n.string("Mono")
+            case .crimson: return L10n.string("Crimson")
+            case .orange: return L10n.string("Orange")
+            case .amber: return L10n.string("Amber")
+            case .green: return L10n.string("Green")
+            case .cyan: return L10n.string("Cyan")
+            case .cobalt: return L10n.string("Cobalt")
+            case .violet: return L10n.string("Violet")
+            case .magenta: return L10n.string("Magenta")
             }
         }
         var color: Color {
@@ -55,6 +71,14 @@ final class SwitchPreferences: ObservableObject {
             case .peach: return Color(red: 0.98, green: 0.69, blue: 0.49)
             case .lavender: return Color(red: 0.66, green: 0.58, blue: 0.86)
             case .monochrome: return Color(white: 0.86)
+            case .crimson: return Color(red: 0.91, green: 0.13, blue: 0.22)
+            case .orange: return Color(red: 1.00, green: 0.44, blue: 0.00)
+            case .amber: return Color(red: 1.00, green: 0.72, blue: 0.00)
+            case .green: return Color(red: 0.10, green: 0.74, blue: 0.28)
+            case .cyan: return Color(red: 0.00, green: 0.68, blue: 0.90)
+            case .cobalt: return Color(red: 0.13, green: 0.36, blue: 1.00)
+            case .violet: return Color(red: 0.56, green: 0.24, blue: 0.96)
+            case .magenta: return Color(red: 0.93, green: 0.13, blue: 0.62)
             }
         }
     }
@@ -156,6 +180,10 @@ final class SwitchPreferences: ObservableObject {
         didSet { UserDefaults.standard.set(threeFingerSwitching, forKey: SwitchPreferences.threeFingerSwitchingKey) }
     }
 
+    @Published var clickOnly: Bool {
+        didSet { UserDefaults.standard.set(clickOnly, forKey: SwitchPreferences.clickOnlyKey) }
+    }
+
     @Published var disableAnimations: Bool {
         didSet { UserDefaults.standard.set(disableAnimations, forKey: disableAnimationsKey) }
     }
@@ -166,6 +194,10 @@ final class SwitchPreferences: ObservableObject {
 
     @Published var blacklist: Set<String> {
         didSet { UserDefaults.standard.set(Array(blacklist), forKey: SwitchPreferences.blacklistKey) }
+    }
+
+    @Published var passthroughApps: Set<String> {
+        didSet { UserDefaults.standard.set(Array(passthroughApps), forKey: SwitchPreferences.passthroughAppsKey) }
     }
 
     @Published var titleExclusions: [String] {
@@ -228,6 +260,7 @@ final class SwitchPreferences: ObservableObject {
         didSet {
             UserDefaults.standard.set(typeToFilter, forKey: SwitchPreferences.typeToFilterKey)
             if typeToFilter && vimNavigation { vimNavigation = false }
+            if typeToFilter && homeRowSelection { homeRowSelection = false }
         }
     }
 
@@ -235,6 +268,15 @@ final class SwitchPreferences: ObservableObject {
         didSet {
             UserDefaults.standard.set(vimNavigation, forKey: SwitchPreferences.vimNavigationKey)
             if vimNavigation && typeToFilter { typeToFilter = false }
+            if vimNavigation && homeRowSelection { homeRowSelection = false }
+        }
+    }
+
+    @Published var homeRowSelection: Bool {
+        didSet {
+            UserDefaults.standard.set(homeRowSelection, forKey: SwitchPreferences.homeRowSelectionKey)
+            if homeRowSelection && typeToFilter { typeToFilter = false }
+            if homeRowSelection && vimNavigation { vimNavigation = false }
         }
     }
 
@@ -258,6 +300,10 @@ final class SwitchPreferences: ObservableObject {
         didSet { UserDefaults.standard.set(maxListRows, forKey: SwitchPreferences.maxListRowsKey) }
     }
 
+    @Published var panelWidthScale: Double {
+        didSet { UserDefaults.standard.set(panelWidthScale, forKey: SwitchPreferences.panelWidthScaleKey) }
+    }
+
     @Published var pinnedBundleIDs: Set<String> {
         didSet { UserDefaults.standard.set(Array(pinnedBundleIDs), forKey: SwitchPreferences.pinnedBundleIDsKey) }
     }
@@ -268,6 +314,10 @@ final class SwitchPreferences: ObservableObject {
 
     @Published var shiftTapReverses: Bool {
         didSet { UserDefaults.standard.set(shiftTapReverses, forKey: SwitchPreferences.shiftTapReversesKey) }
+    }
+
+    @Published var backtickReverses: Bool {
+        didSet { UserDefaults.standard.set(backtickReverses, forKey: SwitchPreferences.backtickReversesKey) }
     }
 
     @Published var hideMinimizedWindows: Bool {
@@ -291,9 +341,11 @@ final class SwitchPreferences: ObservableObject {
     nonisolated static let stickyModeKey = "switch.stickyMode"
     nonisolated static let disableMouseKey = "switch.disableMouse"
     nonisolated static let threeFingerSwitchingKey = "switch.threeFingerSwitching"
+    nonisolated static let clickOnlyKey = "switch.clickOnly"
     private let disableAnimationsKey = "switch.disableAnimations"
     nonisolated static let verticalListKey = "switch.verticalList"
     nonisolated static let blacklistKey = "switch.blacklist"
+    nonisolated static let passthroughAppsKey = "switch.passthroughApps"
     nonisolated static let titleExclusionsKey = "switch.titleExclusions"
     private let mruMixSpacesKey = "switch.mruMixSpaces"
     nonisolated static let staticOrderKey = "switch.staticOrder"
@@ -310,14 +362,19 @@ final class SwitchPreferences: ObservableObject {
     nonisolated static let currentDisplayOnlyKey = "switch.currentDisplayOnly"
     nonisolated static let typeToFilterKey = "switch.typeToFilter"
     nonisolated static let vimNavigationKey = "switch.vimNavigation"
+    nonisolated static let homeRowSelectionKey = "switch.homeRowSelection"
+    // Pick windows 1-9 by layout character; H is left out so ⌘H still hides (#171).
+    nonisolated static let homeRowKeys: [Character] = ["a", "s", "d", "f", "g", "j", "k", "l", ";"]
     nonisolated static let thumbnailHeightKey = "switch.thumbnailHeight"
     nonisolated static let appIconSizeKey = "switch.appIconSize"
     nonisolated static let automaticGridColumnsKey = "switch.automaticGridColumns"
     nonisolated static let gridColumnsKey = "switch.gridColumns"
     nonisolated static let maxListRowsKey = "switch.maxListRows"
+    nonisolated static let panelWidthScaleKey = "switch.panelWidthScale"
     nonisolated static let pinnedBundleIDsKey = "switch.pinnedBundleIDs"
     nonisolated static let pickerActivationDelayKey = "switch.pickerActivationDelay"
     nonisolated static let shiftTapReversesKey = "switch.shiftTapReverses"
+    nonisolated static let backtickReversesKey = "switch.backtickReverses"
     nonisolated static let hideMinimizedWindowsKey = "switch.hideMinimizedWindows"
     nonisolated static let showNumberKeyHintsKey = "switch.showNumberKeyHints"
     nonisolated static let pickerDisplayKey = "switch.pickerDisplay"
@@ -333,9 +390,11 @@ final class SwitchPreferences: ObservableObject {
         stickyMode = UserDefaults.standard.bool(forKey: SwitchPreferences.stickyModeKey)
         disableMouse = UserDefaults.standard.bool(forKey: SwitchPreferences.disableMouseKey)
         threeFingerSwitching = UserDefaults.standard.bool(forKey: SwitchPreferences.threeFingerSwitchingKey)
+        clickOnly = (UserDefaults.standard.object(forKey: SwitchPreferences.clickOnlyKey) as? Bool) ?? true
         disableAnimations = UserDefaults.standard.bool(forKey: disableAnimationsKey)
         verticalList = UserDefaults.standard.bool(forKey: SwitchPreferences.verticalListKey)
         blacklist = Set(UserDefaults.standard.stringArray(forKey: SwitchPreferences.blacklistKey) ?? [])
+        passthroughApps = Set(UserDefaults.standard.stringArray(forKey: SwitchPreferences.passthroughAppsKey) ?? [])
         titleExclusions = UserDefaults.standard.stringArray(forKey: SwitchPreferences.titleExclusionsKey) ?? []
         mruMixSpaces = (UserDefaults.standard.object(forKey: mruMixSpacesKey) as? Bool) ?? true
         staticOrder = UserDefaults.standard.bool(forKey: SwitchPreferences.staticOrderKey)
@@ -350,9 +409,11 @@ final class SwitchPreferences: ObservableObject {
         showHintStrip = (UserDefaults.standard.object(forKey: SwitchPreferences.showHintStripKey) as? Bool) ?? true
         showWindowCount = (UserDefaults.standard.object(forKey: SwitchPreferences.showWindowCountKey) as? Bool) ?? true
         currentDisplayOnly = UserDefaults.standard.bool(forKey: SwitchPreferences.currentDisplayOnlyKey)
-        let storedVimNavigation = UserDefaults.standard.bool(forKey: SwitchPreferences.vimNavigationKey)
+        let storedHomeRow = UserDefaults.standard.bool(forKey: SwitchPreferences.homeRowSelectionKey)
+        let storedVimNavigation = !storedHomeRow && UserDefaults.standard.bool(forKey: SwitchPreferences.vimNavigationKey)
+        homeRowSelection = storedHomeRow
         vimNavigation = storedVimNavigation
-        typeToFilter = storedVimNavigation
+        typeToFilter = storedVimNavigation || storedHomeRow
             ? false
             : (UserDefaults.standard.object(forKey: SwitchPreferences.typeToFilterKey) as? Bool) ?? true
         thumbnailHeight = (UserDefaults.standard.object(forKey: SwitchPreferences.thumbnailHeightKey) as? Double) ?? Self.defaultThumbnailHeight
@@ -360,11 +421,21 @@ final class SwitchPreferences: ObservableObject {
         automaticGridColumns = UserDefaults.standard.bool(forKey: SwitchPreferences.automaticGridColumnsKey)
         gridColumns = (UserDefaults.standard.object(forKey: SwitchPreferences.gridColumnsKey) as? Int) ?? Self.defaultGridColumns
         maxListRows = (UserDefaults.standard.object(forKey: SwitchPreferences.maxListRowsKey) as? Int) ?? Self.defaultMaxListRows
+        // Before this setting, thumbnail size also set the panel width; start from that so nobody's panel shrinks.
+        let storedPanelWidth = UserDefaults.standard.object(forKey: SwitchPreferences.panelWidthScaleKey) as? Double
+        let panelWidth = Self.clampedPanelWidthScale(storedPanelWidth ?? (UserDefaults.standard.object(forKey: SwitchPreferences.thumbnailHeightKey) as? Double ?? Self.defaultThumbnailHeight) / Self.defaultThumbnailHeight)
+        panelWidthScale = panelWidth
+        if storedPanelWidth == nil { UserDefaults.standard.set(panelWidth, forKey: SwitchPreferences.panelWidthScaleKey) }
         pinnedBundleIDs = Set(UserDefaults.standard.stringArray(forKey: SwitchPreferences.pinnedBundleIDsKey) ?? [])
         pickerActivationDelay = (UserDefaults.standard.object(forKey: SwitchPreferences.pickerActivationDelayKey) as? Double) ?? Self.defaultPickerActivationDelay
         shiftTapReverses = UserDefaults.standard.bool(forKey: SwitchPreferences.shiftTapReversesKey)
+        backtickReverses = UserDefaults.standard.bool(forKey: SwitchPreferences.backtickReversesKey)
         hideMinimizedWindows = UserDefaults.standard.bool(forKey: SwitchPreferences.hideMinimizedWindowsKey)
         showNumberKeyHints = UserDefaults.standard.bool(forKey: SwitchPreferences.showNumberKeyHintsKey)
         pickerDisplay = PickerDisplay(rawValue: UserDefaults.standard.string(forKey: SwitchPreferences.pickerDisplayKey) ?? "") ?? .mouse
+    }
+
+    nonisolated static func clampedPanelWidthScale(_ raw: Double?) -> Double {
+        min(maxPanelWidthScale, max(minPanelWidthScale, raw ?? defaultPanelWidthScale))
     }
 }

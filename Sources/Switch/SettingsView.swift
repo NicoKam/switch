@@ -229,6 +229,12 @@ struct SettingsView: View {
                                   "Swipe horizontally to open the picker, then move in any direction to choose a window. Lift all three fingers to switch.",
                                   $prefs.threeFingerSwitching)
                         Divider().opacity(0.4)
+                        toggleRow("Click only",
+                                  "Ignore mouse hover while the picker is open. Click a window to pick it.",
+                                  $prefs.clickOnly)
+                            .disabled(prefs.disableMouse)
+                            .opacity(prefs.disableMouse ? 0.5 : 1)
+                        Divider().opacity(0.4)
                         toggleRow("Reduce motion",
                                   "Turn off picker fade, selection movement, and other switcher animations.",
                                   $prefs.disableAnimations)
@@ -238,12 +244,16 @@ struct SettingsView: View {
                                   $prefs.hideMenuBarIcon)
                         Divider().opacity(0.4)
                         toggleRow("Vim navigation",
-                                  "Use H J K L to move the selection. Turns off type to filter.",
+                                  "Use H J K L to move the selection. Turns off type to filter and home row keys.",
                                   $prefs.vimNavigation)
                         Divider().opacity(0.4)
+                        toggleRow("Home row keys",
+                                  "Pick the first nine windows with A S D F G J K L ; as well as 1-9. Turns off type to filter and Vim navigation.",
+                                  $prefs.homeRowSelection)
+                        Divider().opacity(0.4)
                         toggleRow("Type to filter",
-                                  prefs.vimNavigation
-                                    ? "Turn this on to disable Vim navigation and filter windows by typing."
+                                  prefs.vimNavigation || prefs.homeRowSelection
+                                    ? "Turn this on to filter windows by typing. Turns off Vim navigation and home row keys."
                                     : "Filter windows by typing while the picker is open. When disabled, ⌘W/⌘Q/⌘H work directly.",
                                   $prefs.typeToFilter)
                         Divider().opacity(0.4)
@@ -267,8 +277,8 @@ struct SettingsView: View {
                                   "Leave out windows that are minimized to the Dock or belong to hidden apps.",
                                   $prefs.hideMinimizedWindows)
                         Divider().opacity(0.4)
-                        toggleRow("Show number key hints",
-                                  "Label the first nine windows with the 1-9 key that picks them.",
+                        toggleRow("Show key hints",
+                                  "Label the first nine windows with the key that picks them.",
                                   $prefs.showNumberKeyHints)
                         Divider().opacity(0.4)
                         toggleRow("Include apps with no windows",
@@ -347,8 +357,17 @@ struct SettingsView: View {
                                 .tint(prefs.accent.color)
                         }
                         Divider().opacity(0.4)
+                        row(title: "Panel width",
+                            detail: panelWidthDetail) {
+                            Slider(value: $prefs.panelWidthScale,
+                                   in: SwitchPreferences.minPanelWidthScale...SwitchPreferences.maxPanelWidthScale,
+                                   step: 0.05)
+                                .frame(width: 140)
+                                .tint(prefs.accent.color)
+                        }
+                        Divider().opacity(0.4)
                         row(title: "Thumbnail size",
-                            detail: L10n.format("Overall picker size. %dpt", Int(prefs.thumbnailHeight))) {
+                            detail: L10n.format("Height of each window preview. %dpt", Int(prefs.thumbnailHeight))) {
                             Slider(value: $prefs.thumbnailHeight, in: 80...300, step: 5)
                                 .frame(width: 140)
                                 .tint(prefs.accent.color)
@@ -362,7 +381,7 @@ struct SettingsView: View {
                         }
                         Divider().opacity(0.4)
                         row(title: "Reset sizing",
-                            detail: "Restore columns, rows, thumbnail size, and app icon size.") {
+                            detail: "Restore panel width, columns, rows, thumbnail size, and app icon size.") {
                             Button("Reset") {
                                 resetSizing()
                             }
@@ -376,6 +395,8 @@ struct SettingsView: View {
                 crossSpaceSection
 
                 blacklistSection
+
+                passthroughSection
 
                 titleExclusionSection
             }
@@ -405,6 +426,10 @@ struct SettingsView: View {
                 toggleRow("Reverse with Shift tap",
                           "While holding the hotkey, tap Shift to step backward. ⇧-Tab still works too.",
                           $prefs.shiftTapReverses)
+                Divider().opacity(0.4)
+                toggleRow("Reverse with ⌘`",
+                          "While the picker is open, ⌘` steps backward.",
+                          $prefs.backtickReverses)
                 Divider().opacity(0.4)
                 row(title: "Show picker on",
                     detail: "Mouse: the screen under the cursor. Active: the screen with the focused window. Primary: your main display.") {
@@ -452,7 +477,7 @@ struct SettingsView: View {
         section("Cross-Space") {
             VStack(spacing: 0) {
                 toggleRow("Show cross-Space windows",
-                          "Include windows on other Spaces. Picking one moves it to your current Space.",
+                          "Include windows on other Spaces. Picking one takes you to it.",
                           $prefs.showCrossSpace)
                 Divider().opacity(0.4)
                 toggleRow("Mix by recent use",
@@ -462,9 +487,14 @@ struct SettingsView: View {
         }
     }
 
+    private var panelWidthDetail: String {
+        L10n.format("Width of the picker, independent of thumbnail size. %d%%", Int((prefs.panelWidthScale * 100).rounded()))
+    }
+
     private func resetSizing() {
         prefs.gridColumns = SwitchPreferences.defaultGridColumns
         prefs.maxListRows = SwitchPreferences.defaultMaxListRows
+        prefs.panelWidthScale = SwitchPreferences.defaultPanelWidthScale
         prefs.thumbnailHeight = SwitchPreferences.defaultThumbnailHeight
         prefs.appIconSize = SwitchPreferences.defaultAppIconSize
     }
@@ -584,20 +614,38 @@ struct SettingsView: View {
     }
 
     private var blacklistSection: some View {
-        section("Excluded apps") {
+        appListSection(
+            "Excluded apps",
+            caption: "Windows from these apps won't appear in the picker.",
+            emptyText: "Nothing excluded.",
+            apps: $prefs.blacklist
+        )
+    }
+
+    private var passthroughSection: some View {
+        appListSection(
+            "Pass-through apps",
+            caption: "Switch's hotkeys go to these apps while they're frontmost, e.g. a virtual machine or remote desktop.",
+            emptyText: "No pass-through apps.",
+            apps: $prefs.passthroughApps
+        )
+    }
+
+    private func appListSection(_ title: String, caption: String, emptyText: String, apps: Binding<Set<String>>) -> some View {
+        section(title) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Windows from these apps won't appear in the picker.")
+                Text(L10n.string(caption))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                if prefs.blacklist.isEmpty {
-                    Text("Nothing excluded.")
+                if apps.wrappedValue.isEmpty {
+                    Text(L10n.string(emptyText))
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .padding(.vertical, 4)
                 } else {
                     VStack(spacing: 4) {
-                        ForEach(Array(prefs.blacklist).sorted(by: { sortKey($0) < sortKey($1) }), id: \.self) { bid in
-                            blacklistRow(bundleID: bid)
+                        ForEach(Array(apps.wrappedValue).sorted(by: { sortKey($0) < sortKey($1) }), id: \.self) { bid in
+                            appRow(bundleID: bid) { apps.wrappedValue.remove(bid) }
                         }
                     }
                 }
@@ -605,7 +653,7 @@ struct SettingsView: View {
                     ForEach(addableApps(), id: \.bundleIdentifier) { app in
                         Button {
                             if let bid = app.bundleIdentifier {
-                                prefs.blacklist.insert(bid)
+                                apps.wrappedValue.insert(bid)
                             }
                         } label: {
                             if let icon = app.icon {
@@ -626,7 +674,7 @@ struct SettingsView: View {
         }
     }
 
-    private func blacklistRow(bundleID: String) -> some View {
+    private func appRow(bundleID: String, onRemove: @escaping () -> Void) -> some View {
         let (name, icon) = appInfo(for: bundleID)
         return HStack(spacing: 8) {
             if let icon {
@@ -642,9 +690,7 @@ struct SettingsView: View {
                     .lineLimit(1)
             }
             Spacer()
-            Button {
-                prefs.blacklist.remove(bundleID)
-            } label: {
+            Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
             }
@@ -704,7 +750,12 @@ struct SettingsView: View {
                 section("Accent") {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(spacing: 14) {
-                            ForEach(SwitchPreferences.AccentChoice.allCases) { choice in
+                            ForEach(SwitchPreferences.AccentChoice.soft) { choice in
+                                accentSwatch(choice)
+                            }
+                        }
+                        HStack(spacing: 14) {
+                            ForEach(SwitchPreferences.AccentChoice.vivid) { choice in
                                 accentSwatch(choice)
                             }
                         }

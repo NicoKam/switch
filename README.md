@@ -17,7 +17,7 @@ This is an independently maintained, AI-assisted fork. The upstream maintainer d
 | Source builds | A command-line build script packages translations, app icon and an ad-hoc signature without Xcode project generation or upstream signing credentials. |
 | Updates | Updates are manual from this fork's source. The official Sparkle feed is disabled so an upstream binary cannot replace the fork's features. |
 
-The current upstream base is **v0.3.17**, commit [`4cffdf7`](https://github.com/Sanyam-G/switch/commit/4cffdf72f233603663b50e6c0d709e118aacf9bc). `main` integrates the former trackpad and localization feature branches and the subsequent lifecycle fixes.
+The current upstream base is **v0.3.23**, commit [`3684121`](https://github.com/Sanyam-G/switch/commit/3684121b2f06542b2e8c6359025377d81790b720). `main` integrates the former trackpad and localization feature branches and the subsequent lifecycle fixes.
 
 ## Build from source
 
@@ -55,6 +55,8 @@ Give an assistant access to a Mac and this prompt:
 - **Three-finger gestures:** Settings → Picker → Behavior → Three-finger swipe. Swipe horizontally to open the picker, navigate in either axis and lift your fingers to select. Disable conflicting macOS three-finger Mission Control / App Exposé or dragging assignments if they interfere.
 - **Language:** Settings → Appearance → Language → Follow System, English or 简体中文. The translation scope currently covers Settings, menu bar menus and About; some picker/onboarding text still uses upstream English.
 - **Automatic grid columns:** Settings → Picker → Sizing → Automatic columns. Otherwise the configured column count is used.
+
+Upstream v0.3.23 also includes pass-through apps, home row key selection, independent panel width, click-only mouse selection, optional ⌘` reverse navigation and higher-contrast accents. Click only is on by default; turn it off to restore hover selection. The panel width starts from the previous thumbnail scale so existing layouts keep their size. Cross-Space selection takes you to the window’s Space.
 
 The original keyboard workflow remains available: ⌘-Tab cycles windows, ⌥-` cycles the current app, Return selects and Esc cancels. The upstream cross-Space, vertical list, exclusion, sticky picker and optional Vim navigation features remain.
 

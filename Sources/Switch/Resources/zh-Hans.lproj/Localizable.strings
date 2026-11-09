@@ -161,3 +161,31 @@
 "Settings…" = "设置…";
 "Updates not configured" = "未配置更新";
 "This build doesn't include Sparkle. Visit switch-dev.sanyamgarg.com to download the latest." = "此构建未包含 Sparkle。请访问 switch-dev.sanyamgarg.com 下载最新版本。";
+
+/* Upstream v0.3.18-v0.3.23 settings. */
+"Click only" = "仅点击选择";
+"Ignore mouse hover while the picker is open. Click a window to pick it." = "切换器打开时忽略鼠标悬停，点击窗口即可选择。";
+"Use H J K L to move the selection. Turns off type to filter and home row keys." = "使用 H J K L 移动选中项。开启后会关闭输入筛选和主行键选择。";
+"Home row keys" = "主行键选择";
+"Pick the first nine windows with A S D F G J K L ; as well as 1-9. Turns off type to filter and Vim navigation." = "使用 A S D F G J K L ; 或 1–9 选择前九个窗口。开启后会关闭输入筛选和 Vim 导航。";
+"Turn this on to filter windows by typing. Turns off Vim navigation and home row keys." = "开启后可输入文字筛选窗口，并关闭 Vim 导航和主行键选择。";
+"Show key hints" = "显示按键提示";
+"Label the first nine windows with the key that picks them." = "为前九个窗口标注可直接选择它们的按键。";
+"Panel width" = "面板宽度";
+"Width of the picker, independent of thumbnail size. %d%%" = "切换器宽度，独立于缩略图大小：%d%%";
+"Height of each window preview. %dpt" = "每个窗口预览的高度：%dpt";
+"Restore panel width, columns, rows, thumbnail size, and app icon size." = "恢复面板宽度、列数、行数、缩略图大小及应用图标大小。";
+"Reverse with ⌘`" = "使用 ⌘` 反向切换";
+"While the picker is open, ⌘` steps backward." = "切换器打开时，按 ⌘` 向前一个窗口切换。";
+"Include windows on other Spaces. Picking one takes you to it." = "包含其他空间中的窗口，选择后会切换到窗口所在空间。";
+"Pass-through apps" = "快捷键透传应用";
+"Switch's hotkeys go to these apps while they're frontmost, e.g. a virtual machine or remote desktop." = "当这些应用位于前台时，将 Switch 的快捷键直接交给它们，例如虚拟机或远程桌面。";
+"No pass-through apps." = "尚未设置快捷键透传应用。";
+"Crimson" = "绯红";
+"Orange" = "橙色";
+"Amber" = "琥珀";
+"Green" = "绿色";
+"Cyan" = "青色";
+"Cobalt" = "钴蓝";
+"Violet" = "紫罗兰";
+"Magenta" = "品红";

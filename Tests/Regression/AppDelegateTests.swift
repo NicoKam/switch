@@ -111,6 +111,30 @@ extension AppDelegate {
         drainRegressionEvents(until: { model.gridColumnCount == 3 })
         precondition(model.gridColumnCount == 3, "Disabling automatic columns must apply the latest manual count")
 
+        let savedWidth = prefs.panelWidthScale
+        let savedThumbnail = prefs.thumbnailHeight
+        defer { prefs.panelWidthScale = savedWidth; prefs.thumbnailHeight = savedThumbnail }
+        prefs.panelWidthScale = 1
+        drainRegressionEvents()
+        let originalWidth = model.panelSize.width
+        let originalScreen = window.screen
+        prefs.panelWidthScale = 1.25
+        drainRegressionEvents(until: { model.panelSize.width > originalWidth })
+        precondition(model.panelSize.width > originalWidth && window.screen == originalScreen,
+                     "Panel width updates must preserve the fork's current display")
+        let resizedWidth = model.panelSize.width
+        prefs.thumbnailHeight = 200
+        drainRegressionEvents()
+        precondition(model.panelSize.width == resizedWidth, "Thumbnail resizing cannot change the independent panel width")
+        prefs.automaticGridColumns = true
+        drainRegressionEvents()
+        let automaticColumns = model.gridColumnCount
+        prefs.thumbnailHeight = 100
+        drainRegressionEvents()
+        precondition(model.gridColumnCount == automaticColumns,
+                     "Automatic columns must follow width, not the old thumbnail scale")
+        print("PASS independent panel width, automatic columns and retained display placement")
+
         gesture.regressionAttachDevice()
         gesture.regressionFrame([1, 2, 3], x: 0.5)
         gesture.regressionFrame([1, 2, 3], x: 0.55)

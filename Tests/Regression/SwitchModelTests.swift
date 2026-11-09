@@ -49,6 +49,14 @@ extension SwitchModel {
         model.selected = 0
         model.navigate(direction: .right)
         precondition(model.selected == 1, "Old gesture input must not affect a later keyboard session")
+        let clickOnly = SwitchPreferences.shared.clickOnly
+        defer { SwitchPreferences.shared.clickOnly = clickOnly }
+        SwitchPreferences.shared.clickOnly = true
+        model.windows = regressionWindows(5)
+        model.selected = 2
+        model.removeFromPicker { $0.id == 1 }
+        precondition(model.selected == 1 && model.filteredWindows[model.selected].id == 3,
+                     "Closing a preceding window cannot move the gesture/keyboard selection to its neighbour")
         print("PASS: incomplete rows, keyboard wrapping and navigation during snapshot loading")
     }
 }

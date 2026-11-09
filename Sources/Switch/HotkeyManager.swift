@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 import CoreGraphics
 
 final class HotkeyManager {
@@ -57,6 +58,11 @@ final class HotkeyManager {
     private var shiftTapPending = false
     private var suspended = false
     private var scrollSuppressed = false
+    /// Read on the tap thread; NSWorkspace is only safe to query from main.
+    private var frontmostBundleID: String?
+    /// Read on the tap thread; TIS calls hit TSM, which is only safe from main.
+    private var layoutData: Data?
+    private var keyboardType: UInt32 = 0
     private var stopRequested = false
 
     private var tapThread: Thread?
@@ -66,6 +72,8 @@ final class HotkeyManager {
     private static let stickyQuickTapMS: Double = 200
     private var wakeToken: NSObjectProtocol?
     private var screensWakeToken: NSObjectProtocol?
+    private var activateToken: NSObjectProtocol?
+    private var layoutToken: NSObjectProtocol?
     private var healthTimer: Timer?
 
     private static let kcEscape: CGKeyCode = 53
@@ -76,6 +84,7 @@ final class HotkeyManager {
     private static let kcRightArrow: CGKeyCode = 124
     private static let kcDownArrow: CGKeyCode = 125
     private static let kcUpArrow: CGKeyCode = 126
+    private static let kcBacktick: CGKeyCode = 50
     private static let kcDigits: [CGKeyCode] = [18, 19, 20, 21, 23, 22, 26, 28, 25]
     private static let kcKeypadDigits: [CGKeyCode] = [83, 84, 85, 86, 87, 88, 89, 91, 92]
 
@@ -83,14 +92,20 @@ final class HotkeyManager {
         if !ensureAccessibility() { return }
         startTapThread()
         installWakeObserver()
+        installFrontmostObserver()
+        installLayoutObserver()
         startHealthCheck()
     }
 
     func stop() {
         if let wakeToken { NSWorkspace.shared.notificationCenter.removeObserver(wakeToken) }
         if let screensWakeToken { NSWorkspace.shared.notificationCenter.removeObserver(screensWakeToken) }
+        if let activateToken { NSWorkspace.shared.notificationCenter.removeObserver(activateToken) }
         wakeToken = nil
         screensWakeToken = nil
+        activateToken = nil
+        if let layoutToken { DistributedNotificationCenter.default().removeObserver(layoutToken) }
+        layoutToken = nil
         healthTimer?.invalidate()
         healthTimer = nil
         stateLock.lock()
@@ -171,6 +186,57 @@ final class HotkeyManager {
         ) { [weak self] _ in
             self?.reinstallIfNeeded()
         }
+    }
+
+    private func installFrontmostObserver() {
+        setFrontmost(NSWorkspace.shared.frontmostApplication)
+        activateToken = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            self?.setFrontmost(note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+        }
+    }
+
+    private func setFrontmost(_ app: NSRunningApplication?) {
+        stateLock.lock()
+        frontmostBundleID = app?.bundleIdentifier
+        stateLock.unlock()
+    }
+
+    private func installLayoutObserver() {
+        refreshLayoutData()
+        layoutToken = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.refreshLayoutData()
+        }
+    }
+
+    private func refreshLayoutData() {
+        var data: Data?
+        if let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+           let pointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) {
+            data = Unmanaged<CFData>.fromOpaque(pointer).takeUnretainedValue() as Data
+        }
+        let type = UInt32(LMGetKbdType())
+        stateLock.lock()
+        layoutData = data
+        keyboardType = type
+        stateLock.unlock()
+    }
+
+    /// Hotkeys go to pass-through apps (VMs, remote desktops) instead of arming the picker.
+    /// Once armed, keep handling them so cycling onto such an app doesn't drop the picker.
+    private func shouldPassThrough() -> Bool {
+        stateLock.lock()
+        let bid = frontmostBundleID
+        let isArmed = armed != nil
+        stateLock.unlock()
+        guard !isArmed, let bid else { return false }
+        let apps = UserDefaults.standard.stringArray(forKey: SwitchPreferences.passthroughAppsKey) ?? []
+        return apps.contains(bid)
     }
 
     /// Defense in depth: even with timeout + wake handlers, occasionally a tap
@@ -261,8 +327,21 @@ final class HotkeyManager {
 
             if let stickyBinding = HotkeyConfig.shared[.stickyToggle],
                stickyBinding.matchesTrigger(keyCode: kc, flags: flags) {
+                if shouldPassThrough() { return Unmanaged.passUnretained(event) }
                 DispatchQueue.main.async { [weak self] in
                     self?.onStickyToggle?()
+                }
+                return nil
+            }
+
+            // Ahead of armSlots so a ⌘` binding steps back once armed; key code like the system ⌘` (#177).
+            if cmd && kc == Self.kcBacktick && isArmed
+                && UserDefaults.standard.bool(forKey: SwitchPreferences.backtickReversesKey) {
+                stateLock.lock()
+                advanced = true
+                stateLock.unlock()
+                DispatchQueue.main.async { [weak self] in
+                    self?.onAdvance?(true)
                 }
                 return nil
             }
@@ -270,6 +349,7 @@ final class HotkeyManager {
             for (slot, style) in Self.armSlots {
                 guard let binding = HotkeyConfig.shared[slot],
                       binding.matchesTrigger(keyCode: kc, flags: flags) else { continue }
+                if shouldPassThrough() { return Unmanaged.passUnretained(event) }
                 armOrAdvance(style, binding: binding, shift: shift)
                 return nil
             }
@@ -282,8 +362,9 @@ final class HotkeyManager {
 
             if armedMode != nil {
                 let key = layoutChar(from: event)
-                let vimNavigation = UserDefaults.standard.bool(forKey: SwitchPreferences.vimNavigationKey)
-                let typeToFilter = vimNavigation
+                let homeRow = UserDefaults.standard.bool(forKey: SwitchPreferences.homeRowSelectionKey)
+                let vimNavigation = !homeRow && UserDefaults.standard.bool(forKey: SwitchPreferences.vimNavigationKey)
+                let typeToFilter = vimNavigation || homeRow
                     ? false
                     : (UserDefaults.standard.object(forKey: SwitchPreferences.typeToFilterKey) as? Bool) ?? true
                 let actionModifierMatches = cmd && (sticky || !typeToFilter || shift)
@@ -346,7 +427,8 @@ final class HotkeyManager {
                     }
                     return nil
                 }
-                if let index = digitIndex(for: kc) {
+                if let index = digitIndex(for: kc)
+                    ?? (homeRow ? key.flatMap { SwitchPreferences.homeRowKeys.firstIndex(of: $0) } : nil) {
                     let chain = cmd
                     DispatchQueue.main.async { [weak self] in
                         if chain { self?.onPickSelectOnly?(index) }
@@ -360,6 +442,8 @@ final class HotkeyManager {
                     }
                     return nil
                 }
+                // Unbound keys stay with the picker; otherwise ⌘S or ⌘X lands in the app underneath.
+                return nil
             }
         }
 
@@ -390,7 +474,10 @@ final class HotkeyManager {
             }
 
             if !armingHeld {
-                let quickTap = (armedAt.map { Date().timeIntervalSince($0) * 1000 < Self.stickyQuickTapMS } ?? false) && !advanced
+                // Only quick if the picker hasn't shown yet, so a 0ms delay never flips back (#179).
+                let delayMS = (UserDefaults.standard.object(forKey: SwitchPreferences.pickerActivationDelayKey) as? Double) ?? SwitchPreferences.defaultPickerActivationDelay
+                let quickTapMS = min(Self.stickyQuickTapMS, delayMS)
+                let quickTap = (armedAt.map { Date().timeIntervalSince($0) * 1000 < quickTapMS } ?? false) && !advanced
                 if !armedSticky || quickTap {
                     let stickyQuickTap = armedSticky
                     clearArmedLocked()
@@ -507,6 +594,10 @@ final class HotkeyManager {
 
     // The character the key produces on the current layout, so ⌘W is the W key on AZERTY too (#149).
     private func layoutChar(from event: CGEvent, keeping: CGEventFlags = []) -> Character? {
+        // A key event's string is fixed when it's created, so clearing ⌥ on a copy still gives ç for C.
+        if event.flags.contains(.maskAlternate), let c = translatedChar(from: event, keeping: keeping) {
+            return c
+        }
         guard let copy = event.copy() else { return nil }
         copy.flags = copy.flags.intersection(keeping)
         var length = 0
@@ -514,6 +605,29 @@ final class HotkeyManager {
         copy.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &length, unicodeString: &buffer)
         guard length > 0, let c = String(utf16CodeUnits: buffer, count: length).first else { return nil }
         return Character(c.lowercased())
+    }
+
+    private func translatedChar(from event: CGEvent, keeping: CGEventFlags) -> Character? {
+        stateLock.lock()
+        let layout = layoutData
+        let type = keyboardType
+        stateLock.unlock()
+        guard let layout else { return nil }
+        let code = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        let shifted = keeping.contains(.maskShift) && event.flags.contains(.maskShift)
+        var deadKeyState: UInt32 = 0
+        var length = 0
+        var buffer = [UniChar](repeating: 0, count: 4)
+        let status = layout.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> OSStatus in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return -1 }
+            return UCKeyTranslate(
+                base, code, UInt16(kUCKeyActionDown), shifted ? UInt32(shiftKey >> 8) : 0,
+                type, OptionBits(kUCKeyTranslateNoDeadKeysBit),
+                &deadKeyState, 4, &length, &buffer
+            )
+        }
+        guard status == noErr, length > 0 else { return nil }
+        return String(utf16CodeUnits: buffer, count: length).lowercased().first
     }
 
     private func arrowDirection(for kc: CGKeyCode) -> Direction? {

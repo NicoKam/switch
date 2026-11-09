@@ -27,7 +27,7 @@ struct SwitchView: View {
                 hasMouseMovedSinceOpen = true
             }
             hoveredID = windowID
-            if model.selected != index {
+            if !prefs.clickOnly && model.selected != index {
                 lastSelectionFromMouse = true
                 model.selected = index
             }
@@ -68,7 +68,7 @@ struct SwitchView: View {
     @ViewBuilder
     private func numberHint(index: Int) -> some View {
         if prefs.showNumberKeyHints && !isSpaceMode && index < 9 {
-            Text("\(index + 1)")
+            Text(prefs.homeRowSelection ? SwitchPreferences.homeRowKeys[index].uppercased() : "\(index + 1)")
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.9))
                 .frame(width: 16, height: 16)
@@ -517,7 +517,7 @@ private struct SelectionChrome: ViewModifier {
                     }
                     if selected {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(accent.opacity(0.22))
+                            .fill(accent.opacity(0.32))
                             .matchedGeometryEffect(id: "selectionBG", in: namespace)
                     }
                 }
@@ -526,7 +526,7 @@ private struct SelectionChrome: ViewModifier {
                 ZStack {
                     if selected {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .strokeBorder(accent.opacity(0.95), lineWidth: 2)
+                            .strokeBorder(accent, lineWidth: 2)
                             .matchedGeometryEffect(id: "selectionRing", in: namespace)
                     }
                 }
